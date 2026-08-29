@@ -62,25 +62,19 @@ protocol itself uses.
 
 ## Status
 
-**Walking skeleton, [v0.1.0](https://github.com/macula-io/macula-cli/releases/tag/v0.1.0)
-tagged and released 2026-08-29.** All five commands ran successfully
-against the real 7-station demo fleet as each was built — not batched to
-the end — including finding and fixing several real bugs along the way
-(`pubsub watch` crashing on a station behavior it hadn't accounted for —
-[HOW-TO guide](guides/HOWTO.md) §4 — plus a `SIGPIPE`/`pipefail` bug in
-`install.sh` and a Windows/macOS identity-path bug, both found running the
-scripts for real, not just reading them). CI checks `gofmt`/`vet`/`build`
-plus a GoReleaser snapshot build, `shellcheck` on the install/uninstall
-scripts, and a PowerShell parse-check — no unit tests, since every command
-talks to a live station by design; verification is "run it against the
-fleet," same convention `macula-go-sdk`'s own `live`-tagged tests follow.
-
-⚠ **The released `v0.1.0` binary is currently one commit behind `master`**
-— it predates the identity-path fix above, so a Windows or macOS install of
-`v0.1.0` specifically still has the old, wrong identity path (Linux is
-unaffected; the install/uninstall *scripts* themselves are always fetched
-fresh from `master`, so only the compiled binary itself is behind). A
-`v0.1.1` closing that gap hasn't been cut yet.
+**Walking skeleton, [v0.1.1](https://github.com/macula-io/macula-cli/releases/tag/v0.1.1)
+tagged and released 2026-08-29 (current — matches the tip of `master`).**
+All five commands ran successfully against the real 7-station demo fleet as
+each was built — not batched to the end — including finding and fixing
+several real bugs along the way (`pubsub watch` crashing on a station
+behavior it hadn't accounted for — [HOW-TO guide](guides/HOWTO.md) §4 —
+plus a `SIGPIPE`/`pipefail` bug in `install.sh` and a Windows/macOS
+identity-path bug in `v0.1.0`, both fixed in `v0.1.1`). CI checks
+`gofmt`/`vet`/`build` plus a GoReleaser snapshot build, `shellcheck` on the
+install/uninstall scripts, and a PowerShell parse-check — no unit tests,
+since every command talks to a live station by design; verification is
+"run it against the fleet," same convention `macula-go-sdk`'s own
+`live`-tagged tests follow.
 
 Unlike this repo, `macula-go-sdk` itself has never been tagged at all;
 `go install ...@latest` there resolves to the tip of `master`.
@@ -183,7 +177,6 @@ against.
 |---|---|
 | [`macula-io/macula-go-sdk`](https://github.com/macula-io/macula-go-sdk) | The SDK every command in this repo is built directly on — identity, wire protocol, QUIC transport. |
 | [`macula-io/macula-station`](https://github.com/macula-io/macula-station) | The relay station this tool connects to and diagnoses. Its own `docs/` incident writeups are useful context for what a failure here might mean station-side. |
-| [`macula-io/macula-mcp`](https://github.com/macula-io/macula-mcp) | A different layer: a thin MCP server proxying to a local `hecate-daemon`, agent-facing application actions — not wire-protocol diagnosis. Not overlapping with this tool's job. |
 | `macula-apps/macula-cam2me` | The real pain that motivated this tool: mesh-connectivity issues discovered building a mobile app with no independent way to test the mesh outside the running app. |
 
 ---

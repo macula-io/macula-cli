@@ -64,14 +64,17 @@ protocol itself uses.
 
 ## Status
 
-**Walking skeleton, [v0.1.1](https://github.com/macula-io/macula-cli/releases/tag/v0.1.1)
+**Walking skeleton, [v0.1.2](https://github.com/macula-io/macula-cli/releases/tag/v0.1.2)
 tagged and released 2026-08-29 (current — matches the tip of `master`).**
-All five commands ran successfully against the real 7-station demo fleet as
+All nine commands ran successfully against the real 7-station demo fleet as
 each was built — not batched to the end — including finding and fixing
 several real bugs along the way (`pubsub watch` crashing on a station
 behavior it hadn't accounted for — [HOW-TO guide](guides/HOWTO.md) §4 —
 plus a `SIGPIPE`/`pipefail` bug in `install.sh` and a Windows/macOS
-identity-path bug in `v0.1.0`, both fixed in `v0.1.1`). CI checks
+identity-path bug in `v0.1.0`, both fixed in `v0.1.1`). `identity`,
+`pubsub publish`, and `content put`/`get` were added afterward, driven by
+[`macula-mcp`](https://github.com/macula-io/macula-mcp)'s rework onto this
+CLI, and shipped in `v0.1.2`. CI checks
 `gofmt`/`vet`/`build` plus a GoReleaser snapshot build, `shellcheck` on the
 install/uninstall scripts, and a PowerShell parse-check — no unit tests,
 since every command talks to a live station by design; verification is

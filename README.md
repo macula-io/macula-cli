@@ -2,69 +2,157 @@
 
 [![CI](https://img.shields.io/github/actions/workflow/status/macula-io/macula-cli/ci.yml?branch=master&label=CI)](https://github.com/macula-io/macula-cli/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0%20OR%20MIT-blue.svg)](#license)
+[![Go Reference](https://img.shields.io/badge/go-1.27%2B-00ADD8?logo=go)](https://go.dev)
+[![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20A%20Coffee-support-yellow.svg)](https://buymeacoffee.com/rlefever)
 
-A scriptable CLI for testing, monitoring, and diagnosing the [Macula](https://github.com/macula-io) mesh, built directly on [macula-go-sdk](https://github.com/macula-io/macula-go-sdk).
+<p align="center">
+  <strong>Test, monitor, and diagnose the Macula mesh from the command line</strong>
+</p>
 
-It exists because the SDKs give you clean primitives (connect, call, publish/subscribe, content, streaming) but no fleet-facing diagnostics of their own — no way to ask "is this station actually reachable," "did this stream actually relay across stations," or "did this content round-trip and Merkle-verify," without writing a throwaway Go program every time. This tool is that throwaway program, built once and kept.
+---
 
-**No TUI, no interactive mode.** The primary consumer is expected to be a script or an agent shelling out to it and parsing `--json` output, not a human watching a live dashboard. Every command works the same way with or without `--json`; human-readable output is a formatting choice, not a different code path.
+## What is macula-cli?
 
-Every failure is reported through Macula's own [BOLT#4 error taxonomy](https://github.com/macula-io/macula-go-sdk/blob/master/bolt4/bolt4.go) (`unknown_next_peer`, `temporary_relay_failure`, etc.) rather than invented text, so a caller parsing output gets the same failure vocabulary the wire protocol itself uses.
+A **scriptable client**, not an operator dashboard — one small Go binary,
+built directly on [`macula-go-sdk`](https://github.com/macula-io/macula-go-sdk),
+that exercises the real wire protocol against a real
+[macula-station](https://github.com/macula-io/macula-station) and reports
+exactly what happened. No TUI, no interactive mode: the primary consumer is
+expected to be a script or an agent shelling out to it and parsing `--json`
+output, not a human watching a live view. Every command works the same way
+with or without `--json` — human-readable output is a formatting choice, not
+a separate code path.
 
-## Install
+It exists because the SDKs give you clean primitives (connect, call,
+publish/subscribe, content, streaming) but no fleet-facing diagnostics of
+their own — no way to ask "is this station actually reachable," "did this
+stream actually relay across stations," or "did this content round-trip and
+Merkle-verify," without writing a throwaway Go program every time. This tool
+is that throwaway program, built once and kept.
 
-```
+**What it does, concretely:**
+
+- **`connect`** — stages the handshake (DNS, QUIC/TLS, CONNECT/HELLO)
+  separately, so a failure names which stage broke instead of one opaque
+  error.
+- **`call`** — one unary RPC call, JSON args in, JSON payload (or a BOLT#4
+  error) out.
+- **`pubsub watch`** — subscribes and streams events as newline-delimited
+  JSON, live.
+- **`stream probe`** — opens a Bidi stream across **two different
+  stations** and confirms data actually flows both ways through the relay,
+  not just that the stream opens.
+- **`content probe`** — puts random test content, gets it back, confirms
+  the bytes and the Merkle verification both check out.
+
+Every failure is reported through Macula's own
+[BOLT#4 error taxonomy](https://github.com/macula-io/macula-go-sdk/blob/master/bolt4/bolt4.go)
+(`unknown_next_peer`, `temporary_relay_failure`, etc.) rather than invented
+text, so a caller parsing output gets the same failure vocabulary the wire
+protocol itself uses.
+
+---
+
+## Status
+
+**Walking skeleton, built and live-verified 2026-08-29, not versioned
+yet.** All five commands ran successfully against the real 7-station demo
+fleet as each was built — not batched to the end — including finding and
+fixing one real bug along the way (`pubsub watch` crashing on a station
+behavior it hadn't accounted for; see the [HOW-TO guide](guides/HOWTO.md)
+§4). CI checks `gofmt`/`vet`/`build` only: every command in this repo talks
+to a live station by design, so there's nothing meaningful to unit test in
+isolation — verification is "run it against the fleet," documented in the
+guide, same convention `macula-go-sdk`'s own `live`-tagged tests follow.
+
+No release/tag has been cut — same as `macula-go-sdk` itself, which has
+never been tagged either; `go install ...@latest` resolves to the tip of
+`master`.
+
+**Not yet built:** `content put`/`get` against an arbitrary file or a known
+MCID (only `probe`'s self-contained round trip exists today), `pubsub
+publish` (only `watch`/subscribe), and anything bridging macula-station's
+loopback-only admin API (`/health`, `/wire`, `/dht/stats`, ...) — that needs
+an SSH tunnel per station and is deliberately out of scope for now.
+
+---
+
+## Quick start
+
+```bash
 go install github.com/macula-io/macula-cli/cmd/macula-cli@latest
+macula-cli connect station-de-frankfurt.macula.io
 ```
 
-## Commands
+**Read the [HOW-TO guide](guides/HOWTO.md) for the full command/flag
+reference before scripting against this** — it covers every flag, real
+example output for each command, and two gotchas worth knowing up front:
+Go's `flag` package requires flags before positional arguments, and
+Macula's wire protocol has no `bool` type at all (a JSON boolean in `--args`
+is rejected, not silently coerced).
 
-Go's `flag` package requires flags before positional arguments — `macula-cli call --json host proc`, not `macula-cli call host proc --json`.
+---
 
-### `connect`
-
-```
-macula-cli connect [--json] [--timeout 15s] <host[:port]>
-```
-
-Runs the handshake as three separate, individually timed stages — DNS resolution, raw QUIC/TLS dial, and the full CONNECT/HELLO handshake — and reports exactly which stage failed. This distinction matters: macula-go-sdk's own docs record a real incident where an unhardened identity made QUIC/TLS look perfectly healthy right up until the HELLO silently never arrived, and a separate one where an IPv6-only station with no AAAA record on its hostname made a plain dial hang with no error at all. One opaque "connect failed" hides which of those happened; this command doesn't.
-
-### `call`
+## Architecture
 
 ```
-macula-cli call [--json] [--realm <hex>] [--args '<json>'] [--timeout 15s] <host[:port]> <procedure>
+cmd/macula-cli/          one file per subcommand, single package — a 5-command
+                          CLI's argument-parsing glue doesn't earn 5 internal packages
+internal/identitystore/  load-or-mint a puzzle-hardened identity, persisted to disk
+internal/report/         one --json envelope / human-text choice, BOLT#4-aware errors
+internal/wirevalue/      JSON <-> cbor.Value bridge for --args and output
 ```
 
-Makes one unary RPC call and prints the RESULT payload, or the ERROR frame's BOLT#4 code/name if the call failed at the wire level. `--args` takes a JSON document; note Macula's wire protocol has no `bool` type, so a JSON boolean is rejected with an explicit error rather than silently coerced — use `0`/`1`.
+| Package | Role |
+|---|---|
+| `cmd/macula-cli` | The five subcommands (`connect`, `call`, `pubsub`, `stream`, `content`) and their flag parsing. Thin — every command is a short, direct sequence of real SDK calls. |
+| `internal/identitystore` | Loads a persisted identity or mints a fresh puzzle-hardened one (`identity.Generate` — never the unhardened path). |
+| `internal/report` | Shared `--json` / human-text output, surfaces BOLT#4 code/name/retryable for wire-level failures. |
+| `internal/wirevalue` | Converts between JSON (what a human or an agent types/reads) and `cbor.Value` (what the wire actually carries) — deliberately narrow, since Macula's CBOR has no `bool` and no float/int ambiguity the way JSON does. |
 
-### `pubsub watch`
+---
 
-```
-macula-cli pubsub watch [--json] [--realm <hex>] [--count N] [--duration <dur>] <host[:port]> <topic>
-```
+## Build & test
 
-Subscribes and prints events as they arrive — one JSON object per line in `--json` mode, not batched. Stops on `--count`, `--duration`, or Ctrl-C, whichever comes first. Tolerates unsolicited non-EVENT frames arriving on the control stream (a real, documented station behavior — see `pubsub.go`) instead of treating them as fatal.
-
-### `stream probe`
-
-```
-macula-cli stream probe [--json] --provider <host[:port]> --caller <host[:port]> [--realm <hex>]
-```
-
-Opens a Bidi stream from a caller on one station to a provider on a **different** station and confirms data actually flows both ways through the relay — not just that the stream opens. This is the generalized, on-demand version of the exact check that caught a real cross-station relay bug on 2026-08-29 (STREAM_OPEN routed correctly, but DATA silently never arrived — see macula-go-sdk's `TestLiveCrossStationStreamingMultiHop`). Reports `open_routed`, `provider_received_caller_frame`, and `caller_received_provider_frame` separately, so a partial failure (open works, data doesn't) is visible instead of collapsing into one pass/fail.
-
-### `content probe`
-
-```
-macula-cli content probe [--json] [--size 4096] [--timeout 15s] <host[:port]>
+```bash
+go build ./...
+go vet ./...
+gofmt -l .
 ```
 
-Puts N random bytes, gets them back, and confirms both the bytes and the Merkle verification check out — a self-contained round trip that needs no pre-existing MCID.
+No unit tests: every command talks to a live station by design. Verify a
+change by actually running the affected command against the fleet
+(`station-de-frankfurt.macula.io:4433` is the default demo station) — see
+the [HOW-TO guide](guides/HOWTO.md) for real example invocations to compare
+against.
 
-## Verifying a change
+---
 
-Every command in this repo talks to a real, live `macula-station` by design — there's nothing meaningful to unit test in isolation, and CI only checks `gofmt`/`vet`/`build`. Verify a change by actually running the affected command against the fleet (`station-de-frankfurt.macula.io:4433` is the default demo station; the full 7-station roster is documented in macula-station's own fleet notes) before considering it done, the same "run, don't scaffold" convention the sibling SDK repos follow for their own `live`-tagged tests.
+## Documentation
+
+| Guide | Description |
+|---|---|
+| [HOW-TO Guide](guides/HOWTO.md) | Full command/flag reference, real example output, gotchas found live-testing each command, BOLT#4 error troubleshooting |
+
+---
+
+## Relationship to other repos
+
+| Repo | Role |
+|---|---|
+| [`macula-io/macula-go-sdk`](https://github.com/macula-io/macula-go-sdk) | The SDK every command in this repo is built directly on — identity, wire protocol, QUIC transport. |
+| [`macula-io/macula-station`](https://github.com/macula-io/macula-station) | The relay station this tool connects to and diagnoses. Its own `docs/` incident writeups are useful context for what a failure here might mean station-side. |
+| [`macula-io/macula-mcp`](https://github.com/macula-io/macula-mcp) | A different layer: a thin MCP server proxying to a local `hecate-daemon`, agent-facing application actions — not wire-protocol diagnosis. Not overlapping with this tool's job. |
+| `macula-apps/macula-cam2me` | The real pain that motivated this tool: mesh-connectivity issues discovered building a mobile app with no independent way to test the mesh outside the running app. |
+
+---
 
 ## License
 
 Dual-licensed under [Apache-2.0](LICENSE-APACHE) or [MIT](LICENSE-MIT), your choice.
+
+---
+
+<p align="center">
+  <sub>Built on macula-go-sdk</sub>
+</p>

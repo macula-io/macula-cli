@@ -44,13 +44,15 @@ is that throwaway program, built once and kept.
   error.
 - **`call`** — one unary RPC call, JSON args in, JSON payload (or a BOLT#4
   error) out.
-- **`pubsub watch`** — subscribes and streams events as newline-delimited
-  JSON, live.
+- **`pubsub watch` / `pubsub publish`** — subscribe and stream events as
+  newline-delimited JSON, or publish one event and exit.
 - **`stream probe`** — opens a Bidi stream across **two different
   stations** and confirms data actually flows both ways through the relay,
   not just that the stream opens.
-- **`content probe`** — puts random test content, gets it back, confirms
-  the bytes and the Merkle verification both check out.
+- **`content probe` / `put` / `get`** — self-contained put+get+verify round
+  trip, or upload/download a real file by its MCID.
+- **`identity`** — prints this machine's local identity (node ID), purely
+  local, no station involved.
 
 Every failure is reported through Macula's own
 [BOLT#4 error taxonomy](https://github.com/macula-io/macula-go-sdk/blob/master/bolt4/bolt4.go)
@@ -79,11 +81,9 @@ since every command talks to a live station by design; verification is
 Unlike this repo, `macula-go-sdk` itself has never been tagged at all;
 `go install ...@latest` there resolves to the tip of `master`.
 
-**Not yet built:** `content put`/`get` against an arbitrary file or a known
-MCID (only `probe`'s self-contained round trip exists today), `pubsub
-publish` (only `watch`/subscribe), and anything bridging macula-station's
-loopback-only admin API (`/health`, `/wire`, `/dht/stats`, ...) — that needs
-an SSH tunnel per station and is deliberately out of scope for now.
+**Not yet built:** anything bridging macula-station's loopback-only admin
+API (`/health`, `/wire`, `/dht/stats`, ...) — that needs an SSH tunnel per
+station and is deliberately out of scope for now.
 
 ---
 

@@ -81,6 +81,24 @@ Windows) to remove that too.
 `stream probe` is the one exception: it always mints two fresh, unpersisted
 identities (one per role) rather than reusing `--identity` — see §5.
 
+**`macula-cli identity`** prints the local node ID without touching the
+network — purely local, mints one via the same load-or-generate path if
+none exists yet:
+
+```
+$ macula-cli identity
+7facb3bdbf646393c3177fbf84b3d83dd2e5dce81235966bf8a5ae38e0ec7b47
+```
+
+**Concurrent commands need distinct `--identity` paths.** Found live
+running `pubsub watch` and `pubsub publish` against each other with no
+`--identity` flag on either: both defaulted to the same persisted identity
+file, and the station kicked the watcher's connection the moment the
+publisher connected under the same node ID (`Application error 0x0
+(remote): closed`) — a real anti-duplicate-session guard, not a bug in
+either command. Give concurrent invocations of this tool separate
+`--identity` paths, same as the two roles in `stream probe` always get.
+
 ---
 
 ## 2. `connect` — staged handshake diagnostic
@@ -186,7 +204,7 @@ it, same-station advertises are near-instant but not instant.
 
 ---
 
-## 4. `pubsub watch` — live event stream
+## 4. `pubsub watch` / `pubsub publish` — live event stream / one-shot publish
 
 ```bash
 macula-cli pubsub watch [--json] [--identity <path>] [--realm <hex>] [--count N] [--duration <dur>] [--poll-timeout 30s] [--connect-timeout 15s] <host[:port]> <topic>
@@ -230,6 +248,35 @@ consumed it, so the next call just waits for whatever arrives next. If
 you're extending this command or writing something similar against
 `RecvEvent` directly, don't treat every non-timeout error from it as fatal;
 check for `frame.ErrNotAnEventFrame` first.
+
+### `pubsub publish`
+
+```bash
+macula-cli pubsub publish [--json] [--identity <path>] [--realm <hex>] [--payload '<json>'] [--connect-timeout 15s] <host[:port]> <topic>
+```
+
+Connects, publishes one event, and exits — no standing connection, no
+subscriber acknowledgment (PUBLISH has no ack on this wire protocol, so a
+clean exit means the send succeeded, not that anyone received it). `--seq`
+isn't a flag: this process doesn't persist state between invocations, so
+each publish uses the current time in milliseconds as its sequence number,
+which is monotonic enough across separate one-shot runs.
+
+```
+$ macula-cli pubsub publish --json --payload '{"attempt":3}' station-de-frankfurt.macula.io macula_cli.smoketest.topic
+{
+  "ok": true,
+  "data": {
+    "topic": "macula_cli.smoketest.topic",
+    "seq": 1788004600827,
+    "duration_ms": 48
+  }
+}
+```
+
+**Remember §1's identity-collision gotcha**: `watch` and `publish` running
+concurrently need distinct `--identity` paths, or the station will kick
+whichever connected second.
 
 ---
 
@@ -290,7 +337,7 @@ in a tight loop, leave a real gap between them rather than trusting a lower
 
 ---
 
-## 6. `content probe` — put/get/verify round trip
+## 6. `content probe` / `put` / `get` — real content transfer
 
 ```bash
 macula-cli content probe [--json] [--identity <path>] [--size 4096] [--connect-timeout 15s] <host[:port]>
@@ -315,6 +362,45 @@ $ macula-cli content probe --json station-de-frankfurt.macula.io
     "size_bytes": 4096,
     "bytes_matched": true,
     "duration_ms": 28
+  }
+}
+```
+
+### `content put` / `content get`
+
+```bash
+macula-cli content put [--json] [--identity <path>] [--connect-timeout 15s] <host[:port]> <file>
+macula-cli content get [--json] [--identity <path>] [--out <file>] [--connect-timeout 15s] <host[:port]> <mcid>
+```
+
+`put` uploads a real file and prints its MCID. `get` downloads and
+Merkle-verifies by MCID (`content.Get` errors internally on a mismatch, so
+a clean exit already means it checked out); with `--out` it writes the
+bytes to a file, without it human mode prints raw bytes to stdout and
+`--json` mode includes them as `content_base64` — no temp file needed for
+a caller that wants the bytes in-process.
+
+```
+$ macula-cli content put --json station-de-frankfurt.macula.io ./notes.txt
+{
+  "ok": true,
+  "data": {
+    "host": "station-de-frankfurt.macula.io:4433",
+    "mcid": "0155296726f758e891af4749a2afd8b3cc9221d6846ed77097363b6c87efb9862432",
+    "size_bytes": 72,
+    "duration_ms": 60
+  }
+}
+
+$ macula-cli content get --json station-de-frankfurt.macula.io 0155296726f758e891af4749a2afd8b3cc9221d6846ed77097363b6c87efb9862432
+{
+  "ok": true,
+  "data": {
+    "host": "station-de-frankfurt.macula.io:4433",
+    "mcid": "0155296726f758e891af4749a2afd8b3cc9221d6846ed77097363b6c87efb9862432",
+    "size_bytes": 72,
+    "content_base64": "aGVsbG8gZnJvbSBtYWN1bGEtY2xpIGNvbnRlbnQgcHV0IHRlc3Q...",
+    "duration_ms": 71
   }
 }
 ```

@@ -42,6 +42,8 @@ func run(args []string) int {
 		return runStream(args[1:])
 	case "content":
 		return runContent(args[1:])
+	case "identity":
+		return runIdentity(args[1:])
 	case "-v", "--version", "version":
 		fmt.Printf("macula-cli %s (commit %s, built %s)\n", version, commit, date)
 		return 0
@@ -62,8 +64,12 @@ Usage:
   macula-cli connect <host[:port]>                    staged handshake diagnostic (DNS, QUIC, HELLO)
   macula-cli call <host[:port]> <procedure>            unary RPC call
   macula-cli pubsub watch <host[:port]> <topic>        subscribe and print events as they arrive
+  macula-cli pubsub publish <host[:port]> <topic>      publish one event to a topic
   macula-cli stream probe                              cross-station streaming round trip
   macula-cli content probe <host[:port]>               content put/get/verify round trip
+  macula-cli content put <host[:port]> <file>          upload a file, print its MCID
+  macula-cli content get <host[:port]> <mcid>          download by MCID
+  macula-cli identity                                  print the local identity's node ID
 
 Run "macula-cli <command> -h" for a command's own flags.
 `)

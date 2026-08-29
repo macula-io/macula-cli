@@ -22,11 +22,99 @@ import (
 )
 
 func runPubsub(args []string) int {
-	if len(args) == 0 || args[0] != "watch" {
-		fmt.Fprintln(os.Stderr, "Usage: macula-cli pubsub watch [flags] <host[:port]> <topic>")
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "Usage: macula-cli pubsub watch|publish [flags] <host[:port]> <topic>")
 		return 2
 	}
-	return runPubsubWatch(args[1:])
+	switch args[0] {
+	case "watch":
+		return runPubsubWatch(args[1:])
+	case "publish":
+		return runPubsubPublish(args[1:])
+	default:
+		fmt.Fprintf(os.Stderr, "macula-cli pubsub: unknown subcommand %q (want watch or publish)\n", args[0])
+		return 2
+	}
+}
+
+type publishResult struct {
+	Topic      string `json:"topic"`
+	Seq        uint64 `json:"seq"`
+	DurationMs int64  `json:"duration_ms"`
+}
+
+// runPubsubPublish is a one-shot PUBLISH: connect, publish, close. No
+// standing session, no delivery confirmation beyond the wire send
+// succeeding (PUBLISH has no ack in this protocol) -- same one-shot
+// shape as every other command in this repo, deliberately not a
+// long-lived publisher process.
+func runPubsubPublish(args []string) int {
+	fs := flag.NewFlagSet("pubsub publish", flag.ContinueOnError)
+	jsonOut := fs.Bool("json", false, "emit a JSON result envelope instead of human-readable text")
+	identityPath := fs.String("identity", "", "path to a persisted identity seed (default: config dir)")
+	realmHex := fs.String("realm", "", "32-byte realm as hex (default: all-zero realm)")
+	payloadJSON := fs.String("payload", "null", "event payload as a JSON document")
+	connectTimeout := fs.Duration("connect-timeout", 15*time.Second, "connect timeout")
+	fs.Usage = func() {
+		fmt.Fprint(fs.Output(), "Usage: macula-cli pubsub publish [flags] <host[:port]> <topic>\n\n"+
+			"Publishes one event to a topic and exits -- no standing connection, no\n"+
+			"subscriber confirmation (PUBLISH has no ack on this wire protocol).\n\nFlags:\n")
+		fs.PrintDefaults()
+	}
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() != 2 {
+		fs.Usage()
+		return 2
+	}
+
+	host, port, err := parseHostPort(fs.Arg(0))
+	if err != nil {
+		return report.Fail(*jsonOut, err, nil)
+	}
+	topic := fs.Arg(1)
+
+	realm, err := parseRealm(*realmHex)
+	if err != nil {
+		return report.Fail(*jsonOut, err, nil)
+	}
+	payload, err := wirevalue.FromJSON([]byte(*payloadJSON))
+	if err != nil {
+		return report.Fail(*jsonOut, err, nil)
+	}
+
+	id, generated, err := loadIdentity(*identityPath)
+	if err != nil {
+		return report.Fail(*jsonOut, err, nil)
+	}
+	if generated && !*jsonOut {
+		fmt.Println("(generated a new identity — puzzle grinding took a moment)")
+	}
+
+	start := time.Now()
+	ctx, cancel := context.WithTimeout(context.Background(), *connectTimeout)
+	defer cancel()
+	session, err := connection.Connect(ctx, host, port, transport.WebPKI{}, id)
+	if err != nil {
+		return report.Fail(*jsonOut, err, nil)
+	}
+	defer session.Close("normal", nil, id)
+
+	// No persisted sequence counter (this process doesn't live between
+	// invocations) -- current-time-millis is monotonic enough across
+	// separate one-shot runs without over-engineering real state.
+	seq := uint64(time.Now().UnixMilli())
+	spec := frame.NewPublishSpec(topic, realm, id.NodeID(), seq, payload, time.Now().UnixMilli())
+	if err := session.Publish(spec, id); err != nil {
+		return report.Fail(*jsonOut, err, nil)
+	}
+
+	result := publishResult{Topic: topic, Seq: seq, DurationMs: time.Since(start).Milliseconds()}
+	report.Ok(*jsonOut, result, func() {
+		fmt.Printf("published to %q (seq=%d, %d ms)\n", topic, seq, result.DurationMs)
+	})
+	return 0
 }
 
 type pubsubEvent struct {

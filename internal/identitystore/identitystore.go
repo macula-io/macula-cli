@@ -12,16 +12,18 @@ import (
 )
 
 // DefaultPath returns the identity file macula-cli uses when --identity
-// isn't given: $XDG_CONFIG_HOME/macula-cli/identity.seed, falling back
-// to ~/.config/macula-cli/identity.seed.
+// isn't given, via os.UserConfigDir() — $XDG_CONFIG_HOME (or
+// ~/.config) on Linux, ~/Library/Application Support on macOS,
+// %AppData% on Windows. Deliberately NOT hand-rolled: an earlier
+// version of this function only handled the Linux/XDG case and silently
+// fell back to ~/.config on Windows and macOS too, landing nowhere near
+// install.ps1's %LOCALAPPDATA%\macula-cli — caught writing the
+// uninstall scripts, not by anyone actually hitting it on those
+// platforms.
 func DefaultPath() (string, error) {
-	base := os.Getenv("XDG_CONFIG_HOME")
-	if base == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("identitystore: resolve home directory: %w", err)
-		}
-		base = filepath.Join(home, ".config")
+	base, err := os.UserConfigDir()
+	if err != nil {
+		return "", fmt.Errorf("identitystore: resolve user config directory: %w", err)
 	}
 	return filepath.Join(base, "macula-cli", "identity.seed"), nil
 }

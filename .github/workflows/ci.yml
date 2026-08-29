@@ -74,19 +74,23 @@ jobs:
           ignore_paths: dist
 
   powershell-parse:
-    name: parse-check install.ps1
+    name: parse-check install.ps1 / uninstall.ps1
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # Syntax-only validation — actually running it would need a real
-      # published release to download against, which isn't available
-      # in this job. Catches the class of error a typo/paren mismatch
-      # would cause without needing network access.
+      # Syntax-only validation — actually running install.ps1 would need
+      # a real published release to download against, which isn't
+      # available in this job. Catches the class of error a typo/paren
+      # mismatch would cause without needing network access.
       - shell: pwsh
         run: |
-          $errors = $null
-          [System.Management.Automation.Language.Parser]::ParseFile("install.ps1", [ref]$null, [ref]$errors) | Out-Null
-          if ($errors.Count -gt 0) {
-            $errors | ForEach-Object { Write-Error $_ }
+          $allErrors = @()
+          foreach ($f in @("install.ps1", "uninstall.ps1")) {
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($f, [ref]$null, [ref]$errors) | Out-Null
+            $allErrors += $errors
+          }
+          if ($allErrors.Count -gt 0) {
+            $allErrors | ForEach-Object { Write-Error $_ }
             exit 1
           }

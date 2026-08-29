@@ -44,13 +44,39 @@ go install github.com/macula-io/macula-cli/cmd/macula-cli@latest
 
 Most commands need an identity to connect with. Every command that does
 takes `--identity <path>`; if you don't pass one, macula-cli mints a fresh
-puzzle-hardened Ed25519 identity on first use and persists it to
-`$XDG_CONFIG_HOME/macula-cli/identity.seed` (falling back to
-`~/.config/macula-cli/identity.seed`), reusing it on every later run. First
+puzzle-hardened Ed25519 identity on first use and persists it via Go's
+`os.UserConfigDir()` — `$XDG_CONFIG_HOME/macula-cli/identity.seed` (or
+`~/.config/macula-cli/identity.seed`) on Linux, `~/Library/Application
+Support/macula-cli/identity.seed` on macOS, `%AppData%\macula-cli\
+identity.seed` on Windows (note: **not** the same directory `install.ps1`
+puts the binary in, `%LOCALAPPDATA%`) — reusing it on every later run. First
 use prints `(generated a new identity — puzzle grinding took a moment)` to
 say why it paused — puzzle grinding (S/Kademlia Sybil-resistance proof of
 work) is real CPU work, typically well under a second but not
 instantaneous.
+
+**Uninstalling:**
+
+```bash
+# Linux / macOS — leaves the persisted identity in place
+curl -fsSL https://raw.githubusercontent.com/macula-io/macula-cli/master/uninstall.sh | bash
+# add --purge to remove the identity too:
+curl -fsSL .../uninstall.sh | bash -s -- --purge
+```
+
+```powershell
+# Windows — leaves the persisted identity in place
+irm https://raw.githubusercontent.com/macula-io/macula-cli/master/uninstall.ps1 | iex
+# -Purge needs a local copy first (piped iex can't take script params):
+iwr -useb .../uninstall.ps1 -OutFile uninstall.ps1; .\uninstall.ps1 -Purge
+```
+
+Both remove the binary from wherever `install.sh`/`install.ps1` put it
+(respecting `MACULA_CLI_INSTALL_DIR` if you overrode it at install time)
+and, by default, leave the persisted identity file untouched — it took real
+puzzle-grinding work to generate, and a later reinstall should be able to
+reuse it rather than mint a new one silently. Pass `--purge` (`-Purge` on
+Windows) to remove that too.
 
 `stream probe` is the one exception: it always mints two fresh, unpersisted
 identities (one per role) rather than reusing `--identity` — see §5.

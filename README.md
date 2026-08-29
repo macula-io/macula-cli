@@ -115,6 +115,12 @@ github.com/macula-io/macula-cli/cmd/macula-cli@latest` works too.
 macula-cli connect station-de-frankfurt.macula.io
 ```
 
+To remove it again: `curl -fsSL .../uninstall.sh | bash` (or
+`irm .../uninstall.ps1 | iex` on Windows) — same repo path, `uninstall.sh`/
+`uninstall.ps1` instead of `install`. Leaves the persisted identity alone
+by default (add `--purge`/`-Purge` to remove that too); see the
+[HOW-TO guide](guides/HOWTO.md) §1.
+
 **Read the [HOW-TO guide](guides/HOWTO.md) for the full command/flag
 reference before scripting against this** — it covers every flag, real
 example output for each command, and two gotchas worth knowing up front:

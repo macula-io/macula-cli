@@ -36,6 +36,8 @@ func run(args []string) int {
 		return runConnect(args[1:])
 	case "call":
 		return runCall(args[1:])
+	case "serve":
+		return runServe(args[1:])
 	case "pubsub":
 		return runPubsub(args[1:])
 	case "stream":
@@ -63,6 +65,7 @@ func usage() {
 Usage:
   macula-cli connect <host[:port]>                    staged handshake diagnostic (DNS, QUIC, HELLO)
   macula-cli call <host[:port]> <procedure>            unary RPC call
+  macula-cli serve <host[:port]> <procedure>           advertise, answer one inbound CALL, exit
   macula-cli pubsub watch <host[:port]> <topic>        subscribe and print events as they arrive
   macula-cli pubsub publish <host[:port]> <topic>      publish one event to a topic
   macula-cli stream probe                              cross-station streaming round trip

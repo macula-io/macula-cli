@@ -9,6 +9,8 @@ import (
 
 	"github.com/macula-io/macula-go-sdk/bolt4"
 	"github.com/macula-io/macula-go-sdk/connection"
+	"github.com/macula-io/macula-go-sdk/directdial"
+	"github.com/macula-io/macula-go-sdk/frame"
 	"github.com/macula-io/macula-go-sdk/transport"
 
 	"github.com/macula-io/macula-cli/internal/report"
@@ -29,10 +31,16 @@ func runCall(args []string) int {
 	realmHex := fs.String("realm", "", "32-byte realm as hex (default: all-zero realm)")
 	argsJSON := fs.String("args", "null", "call payload as a JSON document")
 	timeout := fs.Duration("timeout", 15*time.Second, "connect + call timeout")
+	direct := fs.Bool("direct", false, "resolve the procedure's DHT direct-dial advertisement and call its server directly, instead of routing the call through <host>'s own advertise-gossip routes")
 	fs.Usage = func() {
 		fmt.Fprint(fs.Output(), "Usage: macula-cli call [flags] <host[:port]> <procedure>\n\n"+
 			"Makes one unary RPC call and prints the RESULT payload, or the ERROR frame's\n"+
-			"BOLT#4 code/name if the call failed at the wire level.\n\nFlags:\n")
+			"BOLT#4 code/name if the call failed at the wire level.\n\n"+
+			"With -direct, <host> is used only to query the mesh DHT for the procedure's\n"+
+			"direct-dial advertisement (published by a provider via AdvertiseDirect); the\n"+
+			"actual call dials the resolved serving station in a separate connection.\n"+
+			"Fails with \"procedure has no direct-dial advertisement\" if the provider only\n"+
+			"advertised the plain (non-direct) way.\n\nFlags:\n")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
@@ -75,8 +83,13 @@ func runCall(args []string) int {
 	defer session.Close("normal", nil, id)
 
 	start := time.Now()
-	deadlineMs := time.Now().Add(*timeout).UnixMilli()
-	resp, err := session.Call(procedure, realm, payload, deadlineMs, id, *timeout)
+	var resp frame.CallResponse
+	if *direct {
+		resp, err = directdial.Call(ctx, session, id, realm, procedure, payload, *timeout)
+	} else {
+		deadlineMs := time.Now().Add(*timeout).UnixMilli()
+		resp, err = session.Call(procedure, realm, payload, deadlineMs, id, *timeout)
+	}
 	duration := time.Since(start).Milliseconds()
 	if err != nil {
 		return report.Fail(*jsonOut, err, nil)

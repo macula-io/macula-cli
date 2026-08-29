@@ -6,6 +6,13 @@
 [![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20A%20Coffee-support-yellow.svg)](https://buymeacoffee.com/rlefever)
 
 <p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/macula-cli-full-dark.svg">
+    <img src="assets/macula-cli-full-light.svg" alt="Macula CLI" width="320">
+  </picture>
+</p>
+
+<p align="center">
   <strong>Test, monitor, and diagnose the Macula mesh from the command line</strong>
 </p>
 

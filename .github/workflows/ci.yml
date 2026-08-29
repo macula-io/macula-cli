@@ -39,6 +39,54 @@ jobs:
       # macula-station by design (it's a diagnostic tool for the real
       # mesh, not a library), so there's nothing meaningful to unit
       # test in isolation. Live/manual verification is documented in
-      # the README's "Verifying a change" section — same convention
+      # the README's "Build & test" section — same convention
       # macula-go-sdk uses for its own `live`-tagged tests, just with
       # no offline half to run in CI at all.
+
+  goreleaser-check:
+    name: goreleaser build (snapshot)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: latest
+          # Builds every OS/arch combo and packages the archives, same
+          # as a real release, without publishing anything — catches a
+          # broken .goreleaser.yml (or a build that only fails cross-
+          # compiled) before it's discovered at actual release time.
+          args: release --snapshot --clean
+
+  shellcheck:
+    name: shellcheck install.sh
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ludeeus/action-shellcheck@master
+        with:
+          scandir: "."
+          ignore_paths: dist
+
+  powershell-parse:
+    name: parse-check install.ps1
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Syntax-only validation — actually running it would need a real
+      # published release to download against, which isn't available
+      # in this job. Catches the class of error a typo/paren mismatch
+      # would cause without needing network access.
+      - shell: pwsh
+        run: |
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile("install.ps1", [ref]$null, [ref]$errors) | Out-Null
+          if ($errors.Count -gt 0) {
+            $errors | ForEach-Object { Write-Error $_ }
+            exit 1
+          }

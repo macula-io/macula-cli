@@ -18,6 +18,27 @@ command in this repo.
 ## 1. Installing and identity
 
 ```bash
+# Linux / macOS
+curl -fsSL https://raw.githubusercontent.com/macula-io/macula-cli/master/install.sh | bash
+```
+
+```powershell
+# Windows
+irm https://raw.githubusercontent.com/macula-io/macula-cli/master/install.ps1 | iex
+```
+
+Both scripts download the release archive matching your OS/arch from
+[GitHub Releases](https://github.com/macula-io/macula-cli/releases),
+verify it against that release's own `checksums.txt` (SHA-256), and install
+the binary — `$HOME/.local/bin` by default on Linux/macOS,
+`%LOCALAPPDATA%\macula-cli` on Windows, overridable via
+`MACULA_CLI_INSTALL_DIR`. Pin a specific version instead of latest with
+`MACULA_CLI_VERSION=v0.1.0` (or `$env:MACULA_CLI_VERSION` on Windows) before
+the install command.
+
+Already have Go, or prefer building from source:
+
+```bash
 go install github.com/macula-io/macula-cli/cmd/macula-cli@latest
 ```
 

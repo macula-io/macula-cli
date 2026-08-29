@@ -12,6 +12,15 @@ import (
 	"os"
 )
 
+// version, commit, and date are set via -ldflags by .goreleaser.yml at
+// release build time; "dev" is what `go build`/`go run` without those
+// flags produces, which is the honest answer for a local build.
+var (
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
+)
+
 func main() {
 	os.Exit(run(os.Args[1:]))
 }
@@ -33,6 +42,9 @@ func run(args []string) int {
 		return runStream(args[1:])
 	case "content":
 		return runContent(args[1:])
+	case "-v", "--version", "version":
+		fmt.Printf("macula-cli %s (commit %s, built %s)\n", version, commit, date)
+		return 0
 	case "-h", "--help", "help":
 		usage()
 		return 0

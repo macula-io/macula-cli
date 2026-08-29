@@ -72,8 +72,13 @@ to a live station by design, so there's nothing meaningful to unit test in
 isolation — verification is "run it against the fleet," documented in the
 guide, same convention `macula-go-sdk`'s own `live`-tagged tests follow.
 
-No release/tag has been cut — same as `macula-go-sdk` itself, which has
-never been tagged either; `go install ...@latest` resolves to the tip of
+The release pipeline (GoReleaser, `.github/workflows/release.yml`, triggered
+on a `v*` tag push — cross-compiles linux/darwin/windows × amd64/arm64,
+publishes a GitHub Release with checksums) is built and locally
+snapshot-verified, but **no `v*` tag has been pushed yet**, so
+`install.sh`/`install.ps1` have nothing real to install against until the
+first one is. Unlike this repo, `macula-go-sdk` itself has never been
+tagged at all; `go install ...@latest` there resolves to the tip of
 `master`.
 
 **Not yet built:** `content put`/`get` against an arbitrary file or a known
@@ -86,8 +91,27 @@ an SSH tunnel per station and is deliberately out of scope for now.
 
 ## Quick start
 
+**Linux / macOS:**
+
 ```bash
-go install github.com/macula-io/macula-cli/cmd/macula-cli@latest
+curl -fsSL https://raw.githubusercontent.com/macula-io/macula-cli/master/install.sh | bash
+```
+
+**Windows (PowerShell):**
+
+```powershell
+irm https://raw.githubusercontent.com/macula-io/macula-cli/master/install.ps1 | iex
+```
+
+Both pull the release archive matching your OS/arch from
+[GitHub Releases](https://github.com/macula-io/macula-cli/releases),
+verify it against the release's own `checksums.txt`, and install
+`macula-cli` (`$HOME/.local/bin` on Linux/macOS, `%LOCALAPPDATA%\macula-cli`
+on Windows — override with `MACULA_CLI_INSTALL_DIR`). Prefer building from
+source, or already have Go? `go install
+github.com/macula-io/macula-cli/cmd/macula-cli@latest` works too.
+
+```bash
 macula-cli connect station-de-frankfurt.macula.io
 ```
 

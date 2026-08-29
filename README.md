@@ -62,24 +62,28 @@ protocol itself uses.
 
 ## Status
 
-**Walking skeleton, built and live-verified 2026-08-29, not versioned
-yet.** All five commands ran successfully against the real 7-station demo
-fleet as each was built — not batched to the end — including finding and
-fixing one real bug along the way (`pubsub watch` crashing on a station
-behavior it hadn't accounted for; see the [HOW-TO guide](guides/HOWTO.md)
-§4). CI checks `gofmt`/`vet`/`build` only: every command in this repo talks
-to a live station by design, so there's nothing meaningful to unit test in
-isolation — verification is "run it against the fleet," documented in the
-guide, same convention `macula-go-sdk`'s own `live`-tagged tests follow.
+**Walking skeleton, [v0.1.0](https://github.com/macula-io/macula-cli/releases/tag/v0.1.0)
+tagged and released 2026-08-29.** All five commands ran successfully
+against the real 7-station demo fleet as each was built — not batched to
+the end — including finding and fixing several real bugs along the way
+(`pubsub watch` crashing on a station behavior it hadn't accounted for —
+[HOW-TO guide](guides/HOWTO.md) §4 — plus a `SIGPIPE`/`pipefail` bug in
+`install.sh` and a Windows/macOS identity-path bug, both found running the
+scripts for real, not just reading them). CI checks `gofmt`/`vet`/`build`
+plus a GoReleaser snapshot build, `shellcheck` on the install/uninstall
+scripts, and a PowerShell parse-check — no unit tests, since every command
+talks to a live station by design; verification is "run it against the
+fleet," same convention `macula-go-sdk`'s own `live`-tagged tests follow.
 
-The release pipeline (GoReleaser, `.github/workflows/release.yml`, triggered
-on a `v*` tag push — cross-compiles linux/darwin/windows × amd64/arm64,
-publishes a GitHub Release with checksums) is built and locally
-snapshot-verified, but **no `v*` tag has been pushed yet**, so
-`install.sh`/`install.ps1` have nothing real to install against until the
-first one is. Unlike this repo, `macula-go-sdk` itself has never been
-tagged at all; `go install ...@latest` there resolves to the tip of
-`master`.
+⚠ **The released `v0.1.0` binary is currently one commit behind `master`**
+— it predates the identity-path fix above, so a Windows or macOS install of
+`v0.1.0` specifically still has the old, wrong identity path (Linux is
+unaffected; the install/uninstall *scripts* themselves are always fetched
+fresh from `master`, so only the compiled binary itself is behind). A
+`v0.1.1` closing that gap hasn't been cut yet.
+
+Unlike this repo, `macula-go-sdk` itself has never been tagged at all;
+`go install ...@latest` there resolves to the tip of `master`.
 
 **Not yet built:** `content put`/`get` against an arbitrary file or a known
 MCID (only `probe`'s self-contained round trip exists today), `pubsub

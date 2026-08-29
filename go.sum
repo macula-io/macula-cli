@@ -6,6 +6,8 @@ github.com/klauspost/cpuid/v2 v2.0.9 h1:lgaqFMSdTdQYdZ04uHyN2d/eKdOMyi2YLSvlQIBF
 github.com/klauspost/cpuid/v2 v2.0.9/go.mod h1:FInQzS24/EEf25PyTYn52gqo7WaD8xa0213Md/qVLRg=
 github.com/macula-io/macula-go-sdk v0.0.0-20260829053557-2d1fbc392fc0 h1:GGqyMKTLIID3rfxG51Y37BM0S4o+lgOiJzRHromJetI=
 github.com/macula-io/macula-go-sdk v0.0.0-20260829053557-2d1fbc392fc0/go.mod h1:kaKn2tQYlhXE7AIvta+aaHphzyFv9+92oz5lhR36qAg=
+github.com/macula-io/macula-go-sdk v0.0.0-20260829201254-e03abb84fcbb h1:6YLBtvnsqTIWj0DLUbomW8VlDe2Eo+XKuukmlAiUg9c=
+github.com/macula-io/macula-go-sdk v0.0.0-20260829201254-e03abb84fcbb/go.mod h1:kaKn2tQYlhXE7AIvta+aaHphzyFv9+92oz5lhR36qAg=
 github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZbAQM=
 github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
 github.com/quic-go/go-ossfuzz-seeds v0.1.0 h1:APacT+iIaNF6fd8AGEiN3bT/Jtkd2jz4v4TzM7MFjy0=

@@ -18,18 +18,32 @@ const DefaultName = "default"
 // limited to roughly 108 bytes (struct sockaddr_un's sun_path), and a
 // config directory can easily exceed that once $HOME or
 // $XDG_CONFIG_HOME is a few levels deep -- confirmed directly ("bind:
-// invalid argument") rather than assumed. os.TempDir() is short by
-// convention on every platform, so this uses that instead, scoped by
-// UID so two different local users sharing a world-writable /tmp don't
-// collide (or worse, one intercepting the other's socket) -- os.Getuid
-// returns -1 on Windows, which is fine there since %TEMP% is already
-// per-user.
+// invalid argument") rather than assumed.
+//
+// $XDG_RUNTIME_DIR (systemd-logind's per-UID tmpfs, e.g. /run/user/1000)
+// is preferred when set: it's created with mode 0700 and correct
+// ownership by logind itself before any session starts, so another
+// local user can't write into it at all, let alone pre-create
+// "macula-cli" inside it. Falls back to a UID-scoped os.TempDir()
+// directory otherwise (no XDG_RUNTIME_DIR: minimal containers, most
+// non-systemd setups, macOS -- whose own os.TempDir() is already a
+// non-predictable per-user path, unlike Linux's shared /tmp). Either
+// way, Listen verifies the directory's actual ownership and
+// permissions rather than trusting a bare MkdirAll -- see
+// verifySocketDirSafe's own doc on why that trust would be misplaced
+// on a shared, world-writable temp directory.
 func SocketPath(name string) (string, error) {
 	if name == "" {
 		name = DefaultName
 	}
-	dir := filepath.Join(os.TempDir(), fmt.Sprintf("macula-cli-%d", os.Getuid()))
-	return filepath.Join(dir, name+".sock"), nil
+	return filepath.Join(socketBaseDir(), name+".sock"), nil
+}
+
+func socketBaseDir() string {
+	if rt := os.Getenv("XDG_RUNTIME_DIR"); rt != "" {
+		return filepath.Join(rt, "macula-cli")
+	}
+	return filepath.Join(os.TempDir(), fmt.Sprintf("macula-cli-%d", os.Getuid()))
 }
 
 // Listen binds the control socket at path. A file already there is
@@ -37,8 +51,12 @@ func SocketPath(name string) (string, error) {
 // stale file left by an unclean exit doesn't -- in which case it's
 // removed and rebound rather than left to block every future start.
 func Listen(path string) (net.Listener, error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("daemon: create socket directory: %w", err)
+	}
+	if err := verifySocketDirSafe(dir); err != nil {
+		return nil, err
 	}
 	if _, err := os.Stat(path); err == nil {
 		if conn, dialErr := net.DialTimeout("unix", path, 200*time.Millisecond); dialErr == nil {

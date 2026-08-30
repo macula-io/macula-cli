@@ -46,14 +46,19 @@ is that throwaway program, built once and kept.
   error) out. `-direct` resolves and dials a station straight from its DHT
   advertisement instead of depending on gossip; `-ucan` attaches a UCAN
   token; `-realm-ca`/`-org` verify a direct-dial advertisement's embedded
-  cert chain (Slice 7c Direction B).
+  cert chain (Slice 7c Direction B); `-via-daemon` routes the call through
+  a running `daemon` instead of dialing fresh (not composable with
+  `-direct`).
 - **`serve`** — advertises a procedure, answers one inbound CALL, exits;
   the provider-role counterpart to `call`. Same `-direct`/`-cert-chain`
   flags as `call`, plus `-require-ucan-issuer` to gate the procedure. `
   -daemon` registers it with a running `daemon` instead (see below) —
   persistent, many calls, no exit after the first.
 - **`pubsub watch` / `pubsub publish`** — subscribe and stream events as
-  newline-delimited JSON, or publish one event and exit.
+  newline-delimited JSON, or publish one event and exit. `watch -daemon`
+  taps into a daemon's own subscription instead of subscribing itself;
+  `pubsub subscribe`/`unsubscribe` (daemon-only, no non-daemon form)
+  start or end a subscription that outlives the command that touched it.
 - **`stream probe`** — opens a Bidi stream across **two different
   stations** and confirms data actually flows both ways through the relay,
   not just that the stream opens.
@@ -64,7 +69,8 @@ is that throwaway program, built once and kept.
 - **`ucan mint` / `ucan inspect`** — mint a UCAN token signed by the local
   identity, or decode one's claims without checking its signature.
 - **`daemon start` / `status` / `stop`** — macula-cli's optional long-lived
-  mode: one process holds a single Session open and answers CALLs for
+  mode: one process holds a station connection open (three Sessions,
+  actually — see [Daemon mode](#daemon-mode)) and answers CALLs for
   whatever `serve -daemon` registers, until stopped. Other `macula-cli`
   invocations control it over a local Unix domain control socket instead
   of each dialing the mesh fresh — see [Daemon mode](#daemon-mode) below.
@@ -79,8 +85,10 @@ protocol itself uses.
 
 ## Status
 
-**Walking skeleton, [v0.1.2](https://github.com/macula-io/macula-cli/releases/tag/v0.1.2)
-tagged and released 2026-08-29 (current — matches the tip of `master`).**
+**Walking skeleton. Last tagged release is
+[v0.1.2](https://github.com/macula-io/macula-cli/releases/tag/v0.1.2)
+(2026-08-29) — `master` has since moved ahead (UCAN, direct-dial, cert-chain,
+and the whole of daemon mode below) and hasn't been re-tagged yet.**
 All nine commands ran successfully against the real 7-station demo fleet as
 each was built — not batched to the end — including finding and fixing
 several real bugs along the way (`pubsub watch` crashing on a station
@@ -91,8 +99,12 @@ identity-path bug in `v0.1.0`, both fixed in `v0.1.1`). `identity`,
 [`macula-mcp`](https://github.com/macula-io/macula-mcp)'s rework onto this
 CLI, and shipped in `v0.1.2`. `ucan`/`-direct`/`-cert-chain`/
 `-require-ucan-issuer` (on `call`/`serve`) and daemon mode (`daemon`,
-`serve -daemon`) followed, matching `macula-go-sdk`'s own direct-dial,
-UCAN, cert-chain, and `ServeForever` additions. CI checks
+`serve -daemon`, then `call -via-daemon` and `pubsub subscribe`/`watch
+-daemon`/`unsubscribe`) followed, matching `macula-go-sdk`'s own
+direct-dial, UCAN, cert-chain, and `ServeForever` additions. The daemon's
+three-Session split (see [Daemon mode](#daemon-mode)) was itself a bug fix,
+found live: a first draft sharing one Session between serving and
+`call -via-daemon` intermittently stole its own reply frames. CI checks
 `gofmt`/`vet`/`build` plus a GoReleaser snapshot build, `shellcheck` on the
 install/uninstall scripts, and a PowerShell parse-check — no unit tests,
 since every command talks to a live station by design; verification is
@@ -157,8 +169,9 @@ cmd/macula-cli/          one file per subcommand, single package — argument-pa
 internal/identitystore/  load-or-mint a puzzle-hardened identity, persisted to disk
 internal/report/         one --json envelope / human-text choice, BOLT#4-aware errors
 internal/wirevalue/      JSON <-> cbor.Value bridge for --args and output
-internal/daemon/         daemon mode: the long-lived Session + registry + control
-                          socket "serve -daemon"/"daemon status"/"daemon stop" talk to
+internal/daemon/         daemon mode: three long-lived Sessions (serve/call/subscribe),
+                          the procedure/subscription registries, and the control socket
+                          every daemon-aware subcommand talks to
 ```
 
 | Package | Role |
@@ -167,7 +180,7 @@ internal/daemon/         daemon mode: the long-lived Session + registry + contro
 | `internal/identitystore` | Loads a persisted identity or mints a fresh puzzle-hardened one (`identity.Generate` — never the unhardened path). |
 | `internal/report` | Shared `--json` / human-text output, surfaces BOLT#4 code/name/retryable for wire-level failures. |
 | `internal/wirevalue` | Converts between JSON (what a human or an agent types/reads) and `cbor.Value` (what the wire actually carries) — deliberately narrow, since Macula's CBOR has no `bool` and no float/int ambiguity the way JSON does. |
-| `internal/daemon` | `Server` holds one Session and a mutex-guarded procedure registry, driving `macula-go-sdk`'s `ServeForever`; `Do`/`Listen`/`SocketPath` are the newline-delimited-JSON control-socket client and server halves `cmd/macula-cli`'s daemon-aware commands share. |
+| `internal/daemon` | `Server` holds three Sessions (serve/call/subscribe — see [Daemon mode](#daemon-mode)) plus mutex-guarded procedure and subscription registries, driving `macula-go-sdk`'s `ServeForever`; `Do`/`Watch`/`Listen`/`SocketPath` are the newline-delimited-JSON control-socket client and server halves `cmd/macula-cli`'s daemon-aware commands share. |
 
 ---
 
@@ -180,8 +193,8 @@ shell loop, and there's no way to keep a procedure re-advertised or a
 subscription alive without a process staying up the whole time.
 
 **Daemon mode** is the alternative: one `macula-cli daemon start` process
-holds a single Session open, and other `macula-cli` invocations control it
-over a local Unix domain socket instead of each dialing the mesh fresh —
+holds a station connection open, and other `macula-cli` invocations control
+it over a local Unix domain socket instead of each dialing the mesh fresh —
 the same shape as `ssh-agent` or `dockerd`, not a second product.
 
 ```bash
@@ -193,14 +206,34 @@ macula-cli daemon start station-de-frankfurt.macula.io:4433 &
 macula-cli serve -daemon -reply '{"pong":1}' my.echo
 
 # From anywhere else: ordinary "call" reaches it exactly like any other
-# advertised procedure -- the daemon is invisible to callers.
+# advertised procedure -- the daemon is invisible to callers. Or route
+# through the daemon's own connection instead of dialing fresh:
 macula-cli call station-de-frankfurt.macula.io:4433 my.echo
+macula-cli call -via-daemon my.echo
+
+# A subscription outlives the command that created it -- "watch" taps in
+# and out freely without ending it.
+macula-cli pubsub subscribe my.topic
+macula-cli pubsub watch -daemon my.topic &
+macula-cli pubsub unsubscribe my.topic
 
 # Inspect or stop it.
 macula-cli daemon status
 macula-cli serve -daemon -stop my.echo
 macula-cli daemon stop
 ```
+
+**Three Sessions, not one.** A daemon connects three times, not once: one
+Session (the daemon's real, persisted identity) owns serving and every
+advertisement; a second, ephemeral-identity Session is dedicated to
+`call -via-daemon`; a third, separately ephemeral, is dedicated to every
+`pubsub subscribe`d topic, sharing one receive loop that dispatches by
+topic. This isn't caution for its own sake -- `macula-go-sdk`'s control
+stream is documented as "one thing at a time," and a single-Session build
+of this hit exactly that race live: answering inbound calls while also
+making an outbound one intermittently stole the reply meant for the
+outbound caller. Splitting by concern removes the race instead of hoping
+timing stays lucky.
 
 More than one daemon instance can run side by side via `-socket-name`
 (e.g. one per identity/realm) — every daemon-aware command takes it, and

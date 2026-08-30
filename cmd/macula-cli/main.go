@@ -69,9 +69,14 @@ func usage() {
 Usage:
   macula-cli connect <host[:port]>                    staged handshake diagnostic (DNS, QUIC, HELLO)
   macula-cli call <host[:port]> <procedure>            unary RPC call
+  macula-cli call -via-daemon <procedure>              same, routed through a running daemon
   macula-cli serve <host[:port]> <procedure>           advertise, answer one inbound CALL, exit
+  macula-cli serve -daemon <procedure>                 register with a running daemon, answer many calls
   macula-cli pubsub watch <host[:port]> <topic>        subscribe and print events as they arrive
+  macula-cli pubsub watch -daemon <topic>              tap a daemon's own subscription
   macula-cli pubsub publish <host[:port]> <topic>      publish one event to a topic
+  macula-cli pubsub subscribe <topic>                  daemon-only: start a durable subscription
+  macula-cli pubsub unsubscribe <topic>                daemon-only: end a durable subscription
   macula-cli stream probe                              cross-station streaming round trip
   macula-cli content probe <host[:port]>               content put/get/verify round trip
   macula-cli content put <host[:port]> <file>          upload a file, print its MCID
@@ -80,7 +85,7 @@ Usage:
   macula-cli ucan mint <issuer> <audience>             mint a UCAN token, signed by the local identity
   macula-cli ucan inspect <token-file>                 decode a UCAN token's claims (no signature check)
   macula-cli daemon start <host[:port]>                hold one Session open, serve registered procedures
-  macula-cli daemon status                             show what a running daemon is serving
+  macula-cli daemon status                             show what a running daemon is serving/subscribed to
   macula-cli daemon stop                               ask a running daemon to shut down
 
 Run "macula-cli <command> -h" for a command's own flags.

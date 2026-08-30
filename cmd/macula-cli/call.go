@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -14,6 +16,7 @@ import (
 	"github.com/macula-io/macula-go-sdk/frame"
 	"github.com/macula-io/macula-go-sdk/transport"
 
+	"github.com/macula-io/macula-cli/internal/daemon"
 	"github.com/macula-io/macula-cli/internal/report"
 	"github.com/macula-io/macula-cli/internal/wirevalue"
 )
@@ -36,8 +39,12 @@ func runCall(args []string) int {
 	realmCA := fs.String("realm-ca", "", "PEM file: realm CA to verify against for cert-chain-authorized direct-dial (requires -direct and -org)")
 	org := fs.String("org", "", "expected org name for cert-chain-authorized direct-dial (requires -direct and -realm-ca)")
 	ucanFile := fs.String("ucan", "", "path to a UCAN token file to attach to the call -- NOT composable with -direct: macula-go-sdk's direct-dial call path does not currently accept a UCAN token")
+	viaDaemon := fs.Bool("via-daemon", false, "route this call through a running \"macula-cli daemon\" instead of dialing the mesh directly -- reuses its already-open Session, takes no <host[:port]>. Not composable with -direct.")
+	socketName := fs.String("socket-name", daemon.DefaultName, "with -via-daemon, the target daemon instance's -socket-name")
+	socketPath := fs.String("socket", "", "with -via-daemon, control socket path (default: derived from -socket-name)")
 	fs.Usage = func() {
-		fmt.Fprint(fs.Output(), "Usage: macula-cli call [flags] <host[:port]> <procedure>\n\n"+
+		fmt.Fprint(fs.Output(), "Usage: macula-cli call [flags] <host[:port]> <procedure>\n"+
+			"       macula-cli call -via-daemon [flags] <procedure>\n\n"+
 			"Makes one unary RPC call and prints the RESULT payload, or the ERROR frame's\n"+
 			"BOLT#4 code/name if the call failed at the wire level.\n\n"+
 			"With -direct, <host> is used only to query the mesh DHT for the procedure's\n"+
@@ -49,14 +56,14 @@ func runCall(args []string) int {
 			"embedded cert chain validates to -realm-ca and names -org (Slice 7c Direction\n"+
 			"B managed-realm authorization) -- pair with \"serve -direct -cert-chain\".\n\n"+
 			"With -ucan, attaches the token at that path to a PLAIN (non-direct) call, for\n"+
-			"reaching a procedure served via \"serve -require-ucan-issuer\".\n\nFlags:\n")
+			"reaching a procedure served via \"serve -require-ucan-issuer\".\n\n"+
+			"With -via-daemon, routes the call through an already-running\n"+
+			"\"macula-cli daemon start\" instead of dialing the mesh itself, and takes no\n"+
+			"<host[:port]> (the daemon already has one) -- not composable with -direct,\n"+
+			"since direct-dial resolves and dials a different station per call.\n\nFlags:\n")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
-		return 2
-	}
-	if fs.NArg() != 2 {
-		fs.Usage()
 		return 2
 	}
 	if (*realmCA == "") != (*org == "") {
@@ -67,6 +74,30 @@ func runCall(args []string) int {
 	}
 	if *ucanFile != "" && *direct {
 		return report.Fail(*jsonOut, fmt.Errorf("-ucan cannot be combined with -direct: macula-go-sdk's directdial.Call/CallWithCertChain do not accept a UCAN token today -- attach a UCAN only for a plain call"), nil)
+	}
+	if *viaDaemon && *direct {
+		return report.Fail(*jsonOut, fmt.Errorf("-via-daemon cannot be combined with -direct: the daemon's Session is bound to one already-connected station, direct-dial resolves and dials a different one per call"), nil)
+	}
+
+	if *viaDaemon {
+		if fs.NArg() != 1 {
+			fs.Usage()
+			return 2
+		}
+		return runCallViaDaemon(callViaDaemonArgs{
+			jsonOut:    *jsonOut,
+			procedure:  fs.Arg(0),
+			socketName: *socketName,
+			socketPath: *socketPath,
+			realmHex:   *realmHex,
+			argsJSON:   *argsJSON,
+			timeout:    *timeout,
+			ucanFile:   *ucanFile,
+		})
+	}
+	if fs.NArg() != 2 {
+		fs.Usage()
+		return 2
 	}
 
 	host, port, err := parseHostPort(fs.Arg(0))
@@ -155,6 +186,74 @@ func runCall(args []string) int {
 	report.Ok(*jsonOut, result, func() {
 		fmt.Printf("%s -> %s (%d ms)\n", procedure, result.RespondedBy, duration)
 		fmt.Printf("  %v\n", result.Payload)
+	})
+	return 0
+}
+
+// callViaDaemonArgs carries -via-daemon mode's already-parsed flags
+// into runCallViaDaemon, mirroring serveDaemonArgs's own reasoning in
+// serve.go for the same shape of split.
+type callViaDaemonArgs struct {
+	jsonOut    bool
+	procedure  string
+	socketName string
+	socketPath string
+	realmHex   string
+	argsJSON   string
+	timeout    time.Duration
+	ucanFile   string
+}
+
+// runCallViaDaemon asks a running daemon to make the call on our
+// behalf, over its already-open Session, instead of dialing the mesh
+// here.
+func runCallViaDaemon(a callViaDaemonArgs) int {
+	sockPath, err := resolveSocketPath(a.socketPath, a.socketName)
+	if err != nil {
+		return report.Fail(a.jsonOut, err, nil)
+	}
+
+	var payloadRaw json.RawMessage
+	if a.argsJSON != "" && a.argsJSON != "null" {
+		payloadRaw = json.RawMessage(a.argsJSON)
+	}
+	params := daemon.CallInvokeParams{
+		Procedure: a.procedure,
+		RealmHex:  a.realmHex,
+		Payload:   payloadRaw,
+		TimeoutMs: a.timeout.Milliseconds(),
+	}
+	if a.ucanFile != "" {
+		token, readErr := os.ReadFile(a.ucanFile)
+		if readErr != nil {
+			return report.Fail(a.jsonOut, fmt.Errorf("read %s: %w", a.ucanFile, readErr), nil)
+		}
+		params.UcanTokenHex = hex.EncodeToString(token)
+	}
+
+	var result daemon.CallInvokeResult
+	if err := daemon.Do(sockPath, daemon.MethodCallInvoke, params, &result); err != nil {
+		var derr *daemon.DaemonError
+		if errors.As(err, &derr) && derr.Bolt4Name != "" {
+			return report.Fail(a.jsonOut, err, &report.Error{
+				Message:   derr.Message,
+				Bolt4Code: derr.Bolt4Code,
+				Bolt4Name: derr.Bolt4Name,
+				Retryable: derr.Retryable,
+			})
+		}
+		return report.Fail(a.jsonOut, err, nil)
+	}
+
+	out := callResult{
+		Procedure:   a.procedure,
+		RespondedBy: result.RespondedBy,
+		Payload:     result.Payload,
+		DurationMs:  result.DurationMs,
+	}
+	report.Ok(a.jsonOut, out, func() {
+		fmt.Printf("%s -> %s (%d ms)\n", a.procedure, out.RespondedBy, out.DurationMs)
+		fmt.Printf("  %v\n", out.Payload)
 	})
 	return 0
 }

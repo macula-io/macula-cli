@@ -10,9 +10,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/macula-io/macula-go-sdk/connection"
-	"github.com/macula-io/macula-go-sdk/transport"
-
 	"github.com/macula-io/macula-cli/internal/daemon"
 	"github.com/macula-io/macula-cli/internal/report"
 )
@@ -88,14 +85,13 @@ func runDaemonStart(args []string) int {
 
 	connectCtx, connectCancel := context.WithTimeout(context.Background(), *connectTimeout)
 	defer connectCancel()
-	session, err := connection.Connect(connectCtx, host, port, transport.WebPKI{}, id)
+	srv, err := daemon.NewServer(connectCtx, host, port, id)
 	if err != nil {
 		return report.Fail(*jsonOut, err, nil)
 	}
-	defer session.Close("normal", nil, id)
+	defer srv.Close()
 
 	connectedTo := fmt.Sprintf("%s:%d", host, port)
-	srv := daemon.NewServer(session, id, connectedTo)
 
 	if !*jsonOut {
 		fmt.Printf("daemon started: identity=%s connected_to=%s socket=%s\n", hexNodeID(id), connectedTo, sockPath)
@@ -161,6 +157,14 @@ func runDaemonStatus(args []string) int {
 			fmt.Println("serving:")
 			for _, p := range result.Serving {
 				fmt.Printf("  - %s\n", p)
+			}
+		}
+		if len(result.Subscribed) == 0 {
+			fmt.Println("subscribed:   (no subscriptions)")
+		} else {
+			fmt.Println("subscribed:")
+			for _, t := range result.Subscribed {
+				fmt.Printf("  - %s\n", t)
 			}
 		}
 	})

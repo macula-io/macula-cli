@@ -4,17 +4,20 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
 	"sync"
 	"time"
 
+	"github.com/macula-io/macula-go-sdk/bolt4"
 	"github.com/macula-io/macula-go-sdk/cbor"
 	"github.com/macula-io/macula-go-sdk/connection"
 	"github.com/macula-io/macula-go-sdk/directdial"
 	"github.com/macula-io/macula-go-sdk/frame"
 	"github.com/macula-io/macula-go-sdk/identity"
+	"github.com/macula-io/macula-go-sdk/transport"
 	"github.com/macula-io/macula-go-sdk/ucan"
 
 	"github.com/macula-io/macula-cli/internal/wirevalue"
@@ -27,40 +30,127 @@ type procKey struct {
 	procedure string
 }
 
-// Server holds one Session and a dynamically-changing registry of
-// procedures served against it -- the daemon-mode counterpart to the
-// one-shot "serve" subcommand's single advertise-then-answer-once
-// shape. Registration and unregistration are ordinary mutex-guarded
-// map operations; connection.ServeForever's lookup/policy parameters
-// are already plain functions, so mutating srv.handlers while
+// Server holds THREE Sessions to the same station and a
+// dynamically-changing registry of procedures served against one of
+// them -- not one Session doing everything. macula-go-sdk's
+// FrameStream.Call/RecvFrame explicitly documents that a shared
+// control stream has "one thing at a time" semantics: any frame
+// arriving while something else is waiting on that same stream gets
+// discarded or misattributed, not queued. A single-Session daemon
+// answering inbound CALLs (ServeForever) while ALSO making outbound
+// calls and running subscriptions on that same stream hits this for
+// real -- confirmed live: an outbound call.invoke intermittently timed
+// out because ServeForever's own receive loop had already consumed
+// and discarded the RESULT frame meant for it. Splitting by concern
+// (matching the SDK's own "use a second Session" guidance, and its
+// live tests' own convention of a fresh identity per Session) removes
+// the race entirely instead of trying to get lucky with timing:
+//
+//   - serveSession/id: the daemon's real, persisted identity. Owns
+//     ServeForever and every Register/Unregister Advertise/Unadvertise
+//     -- this is the identity "daemon status" reports, and the one a
+//     caller resolves to reach anything this daemon advertises.
+//   - callSession/callID: a fresh ephemeral identity, minted once at
+//     startup, used ONLY for call.invoke. callMu serializes access --
+//     two concurrent Invoke calls sharing this session's control
+//     stream would race each other exactly the same way, just between
+//     themselves instead of against ServeForever.
+//   - subSession/subID: a second fresh ephemeral identity, used ONLY
+//     for subscriptions. Every topic this daemon subscribes to shares
+//     this ONE session and ONE receive loop (runSubscriptionLoop),
+//     dispatching by (realm, topic) -- not one Session/loop per topic,
+//     which would just relocate the same race between subscriptions.
+//
+// Registration and unregistration are ordinary mutex-guarded map
+// operations; connection.ServeForever's lookup/policy parameters are
+// already plain functions, so mutating srv.handlers while
 // ServeForever's goroutine runs is the entire mechanism -- no restart,
 // no second registration API on the SDK side.
 type Server struct {
-	session     *connection.Session
-	id          identity.KeyPair
-	connectedTo string
-	startedAt   time.Time
+	serveSession *connection.Session
+	id           identity.KeyPair
+	connectedTo  string
+	startedAt    time.Time
+
+	callSession *connection.Session
+	callID      identity.KeyPair
+	callMu      sync.Mutex
+
+	subSession *connection.Session
+	subID      identity.KeyPair
 
 	mu       sync.Mutex
 	handlers map[procKey]connection.CallHandler
 	policies map[procKey]ucan.Policy
 	order    []procKey // insertion order, for stable "serving" output
 	cancel   context.CancelFunc
+
+	// subsMu/subs are separate from mu: subscriptions and served
+	// procedures are independent concerns, and giving them their own
+	// lock avoids any chance of the two interfering with each other's
+	// hold time.
+	subsMu sync.Mutex
+	subs   map[topicKey]*subscription
 }
 
-// NewServer wraps an already-connected session. The caller retains
-// ownership of session's lifecycle (connect before, close after Run
-// returns) -- same ownership shape every one-shot subcommand already
-// uses, just held for longer.
-func NewServer(session *connection.Session, id identity.KeyPair, connectedTo string) *Server {
-	return &Server{
-		session:     session,
-		id:          id,
-		connectedTo: connectedTo,
-		startedAt:   time.Now(),
-		handlers:    map[procKey]connection.CallHandler{},
-		policies:    map[procKey]ucan.Policy{},
+// NewServer connects all three of a daemon's Sessions (see Server's
+// own doc) to host:port using id for serving/advertising, minting the
+// two ephemeral calling/subscribing identities itself. On any failure
+// partway through, everything already connected is closed before
+// returning the error -- no leaked Sessions on a failed startup.
+func NewServer(ctx context.Context, host string, port uint16, id identity.KeyPair) (*Server, error) {
+	connectedTo := fmt.Sprintf("%s:%d", host, port)
+
+	serveSession, err := connection.Connect(ctx, host, port, transport.WebPKI{}, id)
+	if err != nil {
+		return nil, fmt.Errorf("daemon: connect (serve session): %w", err)
 	}
+
+	callID, err := identity.Generate()
+	if err != nil {
+		_ = serveSession.Close("normal", nil, id)
+		return nil, fmt.Errorf("daemon: generate calling identity: %w", err)
+	}
+	callSession, err := connection.Connect(ctx, host, port, transport.WebPKI{}, callID)
+	if err != nil {
+		_ = serveSession.Close("normal", nil, id)
+		return nil, fmt.Errorf("daemon: connect (call session): %w", err)
+	}
+
+	subID, err := identity.Generate()
+	if err != nil {
+		_ = serveSession.Close("normal", nil, id)
+		_ = callSession.Close("normal", nil, callID)
+		return nil, fmt.Errorf("daemon: generate subscribing identity: %w", err)
+	}
+	subSession, err := connection.Connect(ctx, host, port, transport.WebPKI{}, subID)
+	if err != nil {
+		_ = serveSession.Close("normal", nil, id)
+		_ = callSession.Close("normal", nil, callID)
+		return nil, fmt.Errorf("daemon: connect (subscribe session): %w", err)
+	}
+
+	return &Server{
+		serveSession: serveSession,
+		id:           id,
+		connectedTo:  connectedTo,
+		startedAt:    time.Now(),
+		callSession:  callSession,
+		callID:       callID,
+		subSession:   subSession,
+		subID:        subID,
+		handlers:     map[procKey]connection.CallHandler{},
+		policies:     map[procKey]ucan.Policy{},
+		subs:         map[topicKey]*subscription{},
+	}, nil
+}
+
+// Close closes every Session this daemon holds. Call after Run
+// returns.
+func (srv *Server) Close() {
+	_ = srv.serveSession.Close("normal", nil, srv.id)
+	_ = srv.callSession.Close("normal", nil, srv.callID)
+	_ = srv.subSession.Close("normal", nil, srv.subID)
 }
 
 func parseRealmHex(s string) ([]byte, error) {
@@ -132,15 +222,15 @@ func (srv *Server) Register(p ServeRegisterParams) (ServeRegisterResult, error) 
 
 	switch {
 	case p.Direct && p.CertChainPEM != "":
-		if err := directdial.AdvertiseDirectWithCertChain(srv.session, srv.id, realm, p.Procedure, ttl, []byte(p.CertChainPEM)); err != nil {
+		if err := directdial.AdvertiseDirectWithCertChain(srv.serveSession, srv.id, realm, p.Procedure, ttl, []byte(p.CertChainPEM)); err != nil {
 			return ServeRegisterResult{}, fmt.Errorf("advertise (direct, cert-chain): %w", err)
 		}
 	case p.Direct:
-		if err := directdial.AdvertiseDirect(srv.session, srv.id, realm, p.Procedure, ttl); err != nil {
+		if err := directdial.AdvertiseDirect(srv.serveSession, srv.id, realm, p.Procedure, ttl); err != nil {
 			return ServeRegisterResult{}, fmt.Errorf("advertise (direct): %w", err)
 		}
 	default:
-		if err := srv.session.Advertise(frame.NewAdvertiseSpec(realm, p.Procedure, srv.id.NodeID()), srv.id); err != nil {
+		if err := srv.serveSession.Advertise(frame.NewAdvertiseSpec(realm, p.Procedure, srv.id.NodeID()), srv.id); err != nil {
 			return ServeRegisterResult{}, fmt.Errorf("advertise: %w", err)
 		}
 	}
@@ -183,7 +273,7 @@ func (srv *Server) Unregister(p ServeUnregisterParams) (ServeUnregisterResult, e
 	srv.mu.Unlock()
 
 	if existed {
-		_ = srv.session.Unadvertise(frame.NewUnadvertiseSpec(realm, p.Procedure, srv.id.NodeID()), srv.id)
+		_ = srv.serveSession.Unadvertise(frame.NewUnadvertiseSpec(realm, p.Procedure, srv.id.NodeID()), srv.id)
 	}
 	return ServeUnregisterResult{Unregistered: existed}, nil
 }
@@ -200,7 +290,85 @@ func (srv *Server) Status() StatusResult {
 		ConnectedTo:   srv.connectedTo,
 		UptimeSeconds: int64(time.Since(srv.startedAt).Seconds()),
 		Serving:       procs,
+		Subscribed:    srv.subscriptionTopics(),
 	}
+}
+
+// wireCallError carries BOLT#4 detail through dispatch() into the
+// control-socket Response's RPCError -- the same fields the one-shot
+// "call" command's own error output already surfaces via
+// internal/report.Error, recovered here via errors.As rather than
+// flattened to a plain message the way every other daemon method's
+// errors are.
+type wireCallError struct {
+	message   string
+	bolt4Code *uint8
+	bolt4Name string
+	retryable *bool
+}
+
+func (e *wireCallError) Error() string { return e.message }
+
+// Invoke routes one unary RPC call through srv.callSession instead of
+// a caller dialing the mesh itself -- the daemon-mode counterpart to
+// the one-shot "call" subcommand's plain (non-direct) path. callMu
+// serializes this against any other concurrent Invoke: callSession is
+// dedicated to calling (see Server's own doc), but its control stream
+// still only tolerates one waiter at a time.
+func (srv *Server) Invoke(p CallInvokeParams) (CallInvokeResult, error) {
+	realm, err := parseRealmHex(p.RealmHex)
+	if err != nil {
+		return CallInvokeResult{}, err
+	}
+	payload := cbor.Null()
+	if len(p.Payload) > 0 {
+		payload, err = wirevalue.FromJSON(p.Payload)
+		if err != nil {
+			return CallInvokeResult{}, fmt.Errorf("payload: %w", err)
+		}
+	}
+	timeout := time.Duration(p.TimeoutMs) * time.Millisecond
+	if timeout <= 0 {
+		timeout = 15 * time.Second
+	}
+	deadlineMs := time.Now().Add(timeout).UnixMilli()
+
+	srv.callMu.Lock()
+	defer srv.callMu.Unlock()
+
+	start := time.Now()
+	var resp frame.CallResponse
+	if p.UcanTokenHex != "" {
+		token, decErr := hex.DecodeString(p.UcanTokenHex)
+		if decErr != nil {
+			return CallInvokeResult{}, fmt.Errorf("ucan_token_hex: invalid hex: %w", decErr)
+		}
+		resp, err = srv.callSession.CallWithUCAN(p.Procedure, realm, payload, deadlineMs, srv.callID, timeout, token)
+	} else {
+		resp, err = srv.callSession.Call(p.Procedure, realm, payload, deadlineMs, srv.callID, timeout)
+	}
+	duration := time.Since(start).Milliseconds()
+	if err != nil {
+		return CallInvokeResult{}, err
+	}
+	if resp.IsError {
+		code := resp.Code
+		name := resp.Name
+		if bc, ok := bolt4.FromU8(code); ok {
+			name = bc.Name()
+		}
+		retryable := bolt4.Code(code).IsRetryable()
+		msg := fmt.Sprintf("call failed: %s (code=%d)", name, code)
+		if resp.Detail != nil {
+			msg += ": " + *resp.Detail
+		}
+		return CallInvokeResult{}, &wireCallError{message: msg, bolt4Code: &code, bolt4Name: name, retryable: &retryable}
+	}
+	return CallInvokeResult{
+		RespondedBy: hex.EncodeToString(resp.RespondedBy),
+		Payload:     wirevalue.ToJSON(resp.Payload),
+		DurationMs:  duration,
+	}, nil
 }
 
 // Shutdown asks a running Run to stop -- callable both from the
@@ -237,7 +405,9 @@ func (srv *Server) Run(parentCtx context.Context, socketPath string) error {
 	}()
 
 	serveErrCh := make(chan error, 1)
-	go func() { serveErrCh <- srv.session.ServeForever(ctx, srv.lookup, srv.policy, srv.id) }()
+	go func() { serveErrCh <- srv.serveSession.ServeForever(ctx, srv.lookup, srv.policy, srv.id) }()
+
+	go srv.runSubscriptionLoop(ctx)
 
 	acceptErrCh := make(chan error, 1)
 	go func() { acceptErrCh <- srv.acceptLoop(ctx, ln) }()
@@ -283,6 +453,13 @@ func (srv *Server) handleConn(conn net.Conn) {
 		if err := dec.Decode(&req); err != nil {
 			return // client disconnected, or sent garbage -- nothing more to answer
 		}
+		if req.Method == MethodPubsubWatch {
+			// handleWatch owns the rest of this connection's life --
+			// one ack, then a Notification per event. Nothing more
+			// will ever be read from this connection.
+			srv.handleWatch(conn, enc, req)
+			return
+		}
 		if err := enc.Encode(srv.dispatch(req)); err != nil {
 			return
 		}
@@ -292,7 +469,14 @@ func (srv *Server) handleConn(conn net.Conn) {
 func (srv *Server) dispatch(req Request) Response {
 	result, err := srv.handle(req)
 	if err != nil {
-		return Response{ID: req.ID, Error: &RPCError{Message: err.Error()}}
+		rpcErr := &RPCError{Message: err.Error()}
+		var wireErr *wireCallError
+		if errors.As(err, &wireErr) {
+			rpcErr.Bolt4Code = wireErr.bolt4Code
+			rpcErr.Bolt4Name = wireErr.bolt4Name
+			rpcErr.Retryable = wireErr.retryable
+		}
+		return Response{ID: req.ID, Error: rpcErr}
 	}
 	raw, err := json.Marshal(result)
 	if err != nil {
@@ -315,6 +499,24 @@ func (srv *Server) handle(req Request) (any, error) {
 			return nil, fmt.Errorf("decode params: %w", err)
 		}
 		return srv.Unregister(p)
+	case MethodCallInvoke:
+		var p CallInvokeParams
+		if err := json.Unmarshal(req.Params, &p); err != nil {
+			return nil, fmt.Errorf("decode params: %w", err)
+		}
+		return srv.Invoke(p)
+	case MethodPubsubSubscribe:
+		var p PubsubSubscribeParams
+		if err := json.Unmarshal(req.Params, &p); err != nil {
+			return nil, fmt.Errorf("decode params: %w", err)
+		}
+		return srv.Subscribe(p)
+	case MethodPubsubUnsubscribe:
+		var p PubsubUnsubscribeParams
+		if err := json.Unmarshal(req.Params, &p); err != nil {
+			return nil, fmt.Errorf("decode params: %w", err)
+		}
+		return srv.Unsubscribe(p)
 	case MethodStatus:
 		return srv.Status(), nil
 	case MethodShutdown:

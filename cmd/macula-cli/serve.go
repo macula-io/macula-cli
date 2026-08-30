@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"encoding/hex"
 	"flag"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/macula-io/macula-go-sdk/cbor"
@@ -11,6 +13,7 @@ import (
 	"github.com/macula-io/macula-go-sdk/directdial"
 	"github.com/macula-io/macula-go-sdk/frame"
 	"github.com/macula-io/macula-go-sdk/transport"
+	"github.com/macula-io/macula-go-sdk/ucan"
 
 	"github.com/macula-io/macula-cli/internal/report"
 	"github.com/macula-io/macula-cli/internal/wirevalue"
@@ -37,6 +40,8 @@ func runServe(args []string) int {
 	timeout := fs.Duration("timeout", 30*time.Second, "connect timeout, plus how long to wait for one inbound CALL")
 	direct := fs.Bool("direct", false, "also publish a signed direct-dial DHT advertisement (directdial.AdvertiseDirect), so a caller can resolve and dial this station directly instead of depending on advertise-gossip having propagated a route")
 	ttl := fs.Duration("ttl", time.Hour, "direct-dial advertisement TTL (only meaningful with -direct)")
+	certChainFile := fs.String("cert-chain", "", "PEM file: this service's own cert chain to embed in its direct-dial advertisement (requires -direct; pair with \"call -direct -realm-ca -org\")")
+	requireUcanIssuer := fs.String("require-ucan-issuer", "", "hex-encoded 32-byte Ed25519 public key: gate this procedure to callers presenting a UCAN token issued by this key (pair with \"call -ucan\")")
 	fs.Usage = func() {
 		fmt.Fprint(fs.Output(), "Usage: macula-cli serve [flags] <host[:port]> <procedure>\n\n"+
 			"Advertises <procedure>, waits for exactly ONE inbound CALL, answers it,\n"+
@@ -45,7 +50,13 @@ func runServe(args []string) int {
 			"for/while, or your own scripting) for a long-lived server.\n\n"+
 			"With -direct, also publishes a DHT direct-dial advertisement -- pair\n"+
 			"with \"call -direct\" to reach this station without depending on\n"+
-			"ordinary advertise-gossip having propagated a route.\n\nFlags:\n")
+			"ordinary advertise-gossip having propagated a route.\n\n"+
+			"With -direct plus -cert-chain, embeds a cert chain in that advertisement\n"+
+			"for Slice 7c Direction B managed-realm authorization -- pair with\n"+
+			"\"call -direct -realm-ca -org\".\n\n"+
+			"With -require-ucan-issuer, refuses any CALL that doesn't present a valid\n"+
+			"UCAN token from that issuer, before the handler ever runs -- composes\n"+
+			"freely with -direct, since gating and advertising are independent.\n\nFlags:\n")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
@@ -54,6 +65,17 @@ func runServe(args []string) int {
 	if fs.NArg() != 2 {
 		fs.Usage()
 		return 2
+	}
+	if *certChainFile != "" && !*direct {
+		return report.Fail(*jsonOut, fmt.Errorf("-cert-chain requires -direct (cert-chain authorization is a direct-dial-only feature)"), nil)
+	}
+	var requiredIssuer []byte
+	if *requireUcanIssuer != "" {
+		var hexErr error
+		requiredIssuer, hexErr = hex.DecodeString(*requireUcanIssuer)
+		if hexErr != nil || len(requiredIssuer) != 32 {
+			return report.Fail(*jsonOut, fmt.Errorf("-require-ucan-issuer must be a 32-byte Ed25519 public key as 64 hex chars"), nil)
+		}
 	}
 
 	host, port, err := parseHostPort(fs.Arg(0))
@@ -87,7 +109,19 @@ func runServe(args []string) int {
 	}
 	defer session.Close("normal", nil, id)
 
-	if *direct {
+	switch {
+	case *direct && *certChainFile != "":
+		// AdvertiseDirectWithCertChain calls plain Advertise itself too
+		// (same reasoning as AdvertiseDirect below), so no separate
+		// Advertise call is needed here either.
+		certChainPEM, readErr := os.ReadFile(*certChainFile)
+		if readErr != nil {
+			return report.Fail(*jsonOut, fmt.Errorf("read %s: %w", *certChainFile, readErr), nil)
+		}
+		if err := directdial.AdvertiseDirectWithCertChain(session, id, realm, procedure, *ttl, certChainPEM); err != nil {
+			return report.Fail(*jsonOut, fmt.Errorf("advertise (direct, cert-chain): %w", err), nil)
+		}
+	case *direct:
 		// AdvertiseDirect calls plain Advertise itself (a station-side
 		// registration is required either way -- direct-dial only changes
 		// how a caller FINDS the station, not whether the station has a
@@ -96,7 +130,7 @@ func runServe(args []string) int {
 		if err := directdial.AdvertiseDirect(session, id, realm, procedure, *ttl); err != nil {
 			return report.Fail(*jsonOut, fmt.Errorf("advertise (direct): %w", err), nil)
 		}
-	} else {
+	default:
 		spec := frame.NewAdvertiseSpec(realm, procedure, id.NodeID())
 		if err := session.Advertise(spec, id); err != nil {
 			return report.Fail(*jsonOut, fmt.Errorf("advertise: %w", err), nil)
@@ -119,8 +153,15 @@ func runServe(args []string) int {
 	}
 
 	start := time.Now()
-	if err := session.ServeOneCall(lookup, id, *timeout); err != nil {
-		return report.Fail(*jsonOut, err, nil)
+	var serveErr error
+	if requiredIssuer != nil {
+		policy := func(_ []byte, _ string) ucan.Policy { return ucan.Required(requiredIssuer) }
+		serveErr = session.ServeOneCallGated(lookup, policy, id, *timeout)
+	} else {
+		serveErr = session.ServeOneCall(lookup, id, *timeout)
+	}
+	if serveErr != nil {
+		return report.Fail(*jsonOut, serveErr, nil)
 	}
 	duration := time.Since(start).Milliseconds()
 

@@ -46,6 +46,8 @@ func run(args []string) int {
 		return runContent(args[1:])
 	case "identity":
 		return runIdentity(args[1:])
+	case "ucan":
+		return runUcan(args[1:])
 	case "-v", "--version", "version":
 		fmt.Printf("macula-cli %s (commit %s, built %s)\n", version, commit, date)
 		return 0
@@ -73,6 +75,8 @@ Usage:
   macula-cli content put <host[:port]> <file>          upload a file, print its MCID
   macula-cli content get <host[:port]> <mcid>          download by MCID
   macula-cli identity                                  print the local identity's node ID
+  macula-cli ucan mint <issuer> <audience>             mint a UCAN token, signed by the local identity
+  macula-cli ucan inspect <token-file>                 decode a UCAN token's claims (no signature check)
 
 Run "macula-cli <command> -h" for a command's own flags.
 `)

@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"flag"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/macula-io/macula-go-sdk/bolt4"
@@ -32,6 +33,9 @@ func runCall(args []string) int {
 	argsJSON := fs.String("args", "null", "call payload as a JSON document")
 	timeout := fs.Duration("timeout", 15*time.Second, "connect + call timeout")
 	direct := fs.Bool("direct", false, "resolve the procedure's DHT direct-dial advertisement and call its server directly, instead of routing the call through <host>'s own advertise-gossip routes")
+	realmCA := fs.String("realm-ca", "", "PEM file: realm CA to verify against for cert-chain-authorized direct-dial (requires -direct and -org)")
+	org := fs.String("org", "", "expected org name for cert-chain-authorized direct-dial (requires -direct and -realm-ca)")
+	ucanFile := fs.String("ucan", "", "path to a UCAN token file to attach to the call -- NOT composable with -direct: macula-go-sdk's direct-dial call path does not currently accept a UCAN token")
 	fs.Usage = func() {
 		fmt.Fprint(fs.Output(), "Usage: macula-cli call [flags] <host[:port]> <procedure>\n\n"+
 			"Makes one unary RPC call and prints the RESULT payload, or the ERROR frame's\n"+
@@ -40,7 +44,12 @@ func runCall(args []string) int {
 			"direct-dial advertisement (published by a provider via AdvertiseDirect); the\n"+
 			"actual call dials the resolved serving station in a separate connection.\n"+
 			"Fails with \"procedure has no direct-dial advertisement\" if the provider only\n"+
-			"advertised the plain (non-direct) way.\n\nFlags:\n")
+			"advertised the plain (non-direct) way.\n\n"+
+			"With -direct plus -realm-ca and -org, only trusts an advertisement whose\n"+
+			"embedded cert chain validates to -realm-ca and names -org (Slice 7c Direction\n"+
+			"B managed-realm authorization) -- pair with \"serve -direct -cert-chain\".\n\n"+
+			"With -ucan, attaches the token at that path to a PLAIN (non-direct) call, for\n"+
+			"reaching a procedure served via \"serve -require-ucan-issuer\".\n\nFlags:\n")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
@@ -49,6 +58,15 @@ func runCall(args []string) int {
 	if fs.NArg() != 2 {
 		fs.Usage()
 		return 2
+	}
+	if (*realmCA == "") != (*org == "") {
+		return report.Fail(*jsonOut, fmt.Errorf("-realm-ca and -org must be given together"), nil)
+	}
+	if *realmCA != "" && !*direct {
+		return report.Fail(*jsonOut, fmt.Errorf("-realm-ca/-org require -direct (cert-chain authorization is a direct-dial-only feature)"), nil)
+	}
+	if *ucanFile != "" && *direct {
+		return report.Fail(*jsonOut, fmt.Errorf("-ucan cannot be combined with -direct: macula-go-sdk's directdial.Call/CallWithCertChain do not accept a UCAN token today -- attach a UCAN only for a plain call"), nil)
 	}
 
 	host, port, err := parseHostPort(fs.Arg(0))
@@ -84,9 +102,23 @@ func runCall(args []string) int {
 
 	start := time.Now()
 	var resp frame.CallResponse
-	if *direct {
+	switch {
+	case *direct && *realmCA != "":
+		var realmCAPEM []byte
+		realmCAPEM, err = os.ReadFile(*realmCA)
+		if err == nil {
+			resp, err = directdial.CallWithCertChain(ctx, session, id, realm, procedure, realmCAPEM, *org, payload, *timeout)
+		}
+	case *direct:
 		resp, err = directdial.Call(ctx, session, id, realm, procedure, payload, *timeout)
-	} else {
+	case *ucanFile != "":
+		var ucanToken []byte
+		ucanToken, err = os.ReadFile(*ucanFile)
+		if err == nil {
+			deadlineMs := time.Now().Add(*timeout).UnixMilli()
+			resp, err = session.CallWithUCAN(procedure, realm, payload, deadlineMs, id, *timeout, ucanToken)
+		}
+	default:
 		deadlineMs := time.Now().Add(*timeout).UnixMilli()
 		resp, err = session.Call(procedure, realm, payload, deadlineMs, id, *timeout)
 	}

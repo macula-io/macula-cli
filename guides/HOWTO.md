@@ -344,7 +344,7 @@ $ macula-cli pubsub watch --json --count 1 --duration 25s station-de-frankfurt.m
 
 **A subscribed session's control stream can carry frames that aren't
 EVENTs at all — a real station behavior, not a bug in this tool.** A
-sibling SDK (`macula-dotnet-sdk`) independently documented "unprompted
+sibling SDK (`macula-dotnet`) independently documented "unprompted
 advertise frames for built-in `_content.*` procedures on every client's
 control stream" while building its own examples; `pubsub watch` hit the
 exact same thing live while this command was first being tested, and
@@ -541,8 +541,8 @@ Both are purely local — no station, no network, same shape as `identity`.
 `mint` self-issues and signs a token with the local identity, matching
 macula-go's `ucan.Create` exactly (spec 0.10.0, confirmed against the
 Erlang reference's own NIF source, not the newer incompatible 1.0.0-rc.1
-IPLD spec) — the same token verifies against macula-rust-sdk,
-macula-dotnet-sdk, macula-php-sdk, or the Erlang reference. `<issuer>`/
+IPLD spec) — the same token verifies against macula-rust,
+macula-dotnet, macula-php, or the Erlang reference. `<issuer>`/
 `<audience>` are opaque DID strings, not validated here. `--capability`'s
 value splits on the **first** colon only — `with:can`, so
 `macula_cli.smoketest.add:invoke` becomes `with="macula_cli.smoketest.add"`,

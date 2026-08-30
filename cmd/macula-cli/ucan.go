@@ -68,7 +68,7 @@ func runUcanMint(args []string) int {
 		fmt.Fprint(fs.Output(), "Usage: macula-cli ucan mint [flags] <issuer> <audience>\n\n"+
 			"Mints a UCAN token self-issued and signed by the local identity, matching\n"+
 			"macula-go's ucan.Create exactly -- the same token verifies against\n"+
-			"macula-rust-sdk, macula-dotnet-sdk, macula-php-sdk, or the Erlang reference.\n"+
+			"macula-rust, macula-dotnet, macula-php, or the Erlang reference.\n"+
 			"<issuer>/<audience> are opaque DID strings, not validated here.\n\nFlags:\n")
 		fs.PrintDefaults()
 	}

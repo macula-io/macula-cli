@@ -8,6 +8,7 @@ import (
 
 	"github.com/macula-io/macula-go-sdk/cbor"
 	"github.com/macula-io/macula-go-sdk/connection"
+	"github.com/macula-io/macula-go-sdk/directdial"
 	"github.com/macula-io/macula-go-sdk/frame"
 	"github.com/macula-io/macula-go-sdk/transport"
 
@@ -34,12 +35,17 @@ func runServe(args []string) int {
 	replyJSON := fs.String("reply", "null", "the RESULT payload to send back, as a JSON document")
 	echo := fs.Bool("echo", false, "reply with the caller's own payload instead of -reply")
 	timeout := fs.Duration("timeout", 30*time.Second, "connect timeout, plus how long to wait for one inbound CALL")
+	direct := fs.Bool("direct", false, "also publish a signed direct-dial DHT advertisement (directdial.AdvertiseDirect), so a caller can resolve and dial this station directly instead of depending on advertise-gossip having propagated a route")
+	ttl := fs.Duration("ttl", time.Hour, "direct-dial advertisement TTL (only meaningful with -direct)")
 	fs.Usage = func() {
 		fmt.Fprint(fs.Output(), "Usage: macula-cli serve [flags] <host[:port]> <procedure>\n\n"+
 			"Advertises <procedure>, waits for exactly ONE inbound CALL, answers it,\n"+
 			"then exits. The provider-role counterpart to \"call\" -- serves one\n"+
 			"request the same way call makes one. Run it in a loop (a shell "+
-			"for/while, or your own scripting) for a long-lived server.\n\nFlags:\n")
+			"for/while, or your own scripting) for a long-lived server.\n\n"+
+			"With -direct, also publishes a DHT direct-dial advertisement -- pair\n"+
+			"with \"call -direct\" to reach this station without depending on\n"+
+			"ordinary advertise-gossip having propagated a route.\n\nFlags:\n")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
@@ -81,9 +87,20 @@ func runServe(args []string) int {
 	}
 	defer session.Close("normal", nil, id)
 
-	spec := frame.NewAdvertiseSpec(realm, procedure, id.NodeID())
-	if err := session.Advertise(spec, id); err != nil {
-		return report.Fail(*jsonOut, fmt.Errorf("advertise: %w", err), nil)
+	if *direct {
+		// AdvertiseDirect calls plain Advertise itself (a station-side
+		// registration is required either way -- direct-dial only changes
+		// how a caller FINDS the station, not whether the station has a
+		// handler registered once it's dialed), so no separate Advertise
+		// call is needed here.
+		if err := directdial.AdvertiseDirect(session, id, realm, procedure, *ttl); err != nil {
+			return report.Fail(*jsonOut, fmt.Errorf("advertise (direct): %w", err), nil)
+		}
+	} else {
+		spec := frame.NewAdvertiseSpec(realm, procedure, id.NodeID())
+		if err := session.Advertise(spec, id); err != nil {
+			return report.Fail(*jsonOut, fmt.Errorf("advertise: %w", err), nil)
+		}
 	}
 	defer func() { _ = session.Unadvertise(frame.NewUnadvertiseSpec(realm, procedure, id.NodeID()), id) }()
 

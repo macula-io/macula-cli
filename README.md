@@ -205,10 +205,18 @@ macula-cli daemon stop
 More than one daemon instance can run side by side via `-socket-name`
 (e.g. one per identity/realm) — every daemon-aware command takes it, and
 `-socket` overrides the derived path outright. The control socket lives
-under a short, UID-scoped temp directory (`os.TempDir()`, not the user
-config directory `identitystore` uses for the identity file) — a Unix
-domain socket path is capped at roughly 108 bytes, and a config-dir-rooted
-path can exceed that depending on `$HOME`; found live, not assumed.
+under `$XDG_RUNTIME_DIR/macula-cli` when set (systemd-logind's per-UID
+tmpfs, already 0700 and correctly owned before any session starts), or a
+UID-scoped `os.TempDir()` directory otherwise — not the user config
+directory `identitystore` uses for the identity file, since a Unix domain
+socket path is capped at roughly 108 bytes and a config-dir-rooted path
+can exceed that depending on `$HOME` (found live, not assumed). On the
+`os.TempDir()` fallback, a shared, world-writable temp directory (`/tmp`
+on a typical multi-user Linux box) means another local user could
+pre-create the target directory before this daemon does, so its
+ownership and permissions are verified before trusting it, not just
+assumed from `os.MkdirAll` succeeding — refused live against a
+deliberately world-writable planted directory during testing.
 
 `serve -daemon`'s registration flags (`-direct`, `-cert-chain`,
 `-require-ucan-issuer`, `-reply`/`-echo`) are the same ones the one-shot

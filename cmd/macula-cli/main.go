@@ -48,6 +48,8 @@ func run(args []string) int {
 		return runIdentity(args[1:])
 	case "ucan":
 		return runUcan(args[1:])
+	case "daemon":
+		return runDaemon(args[1:])
 	case "-v", "--version", "version":
 		fmt.Printf("macula-cli %s (commit %s, built %s)\n", version, commit, date)
 		return 0
@@ -77,6 +79,9 @@ Usage:
   macula-cli identity                                  print the local identity's node ID
   macula-cli ucan mint <issuer> <audience>             mint a UCAN token, signed by the local identity
   macula-cli ucan inspect <token-file>                 decode a UCAN token's claims (no signature check)
+  macula-cli daemon start <host[:port]>                hold one Session open, serve registered procedures
+  macula-cli daemon status                             show what a running daemon is serving
+  macula-cli daemon stop                               ask a running daemon to shut down
 
 Run "macula-cli <command> -h" for a command's own flags.
 `)

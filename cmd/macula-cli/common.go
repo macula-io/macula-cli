@@ -49,6 +49,12 @@ func parseRealm(s string) ([]byte, error) {
 	return realm, nil
 }
 
+// hexNodeID is the one-line hex encoding of id's public node ID, used
+// anywhere a command prints or reports "which identity is this".
+func hexNodeID(id identity.KeyPair) string {
+	return hex.EncodeToString(id.NodeID())
+}
+
 // loadIdentity resolves the --identity path (or the default config
 // path) and loads or mints the keypair macula-cli connects with.
 func loadIdentity(path string) (identity.KeyPair, bool, error) {

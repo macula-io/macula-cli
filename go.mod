@@ -2,7 +2,7 @@ module github.com/macula-io/macula-cli
 
 go 1.27.0
 
-require github.com/macula-io/macula-go-sdk v0.1.0
+require github.com/macula-io/macula-go-sdk v0.2.0
 
 require (
 	github.com/google/uuid v1.6.0 // indirect

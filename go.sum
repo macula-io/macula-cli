@@ -14,6 +14,8 @@ github.com/macula-io/macula-go-sdk v0.0.0-20260829222915-4703a837e87e h1:w6EDAoC
 github.com/macula-io/macula-go-sdk v0.0.0-20260829222915-4703a837e87e/go.mod h1:kaKn2tQYlhXE7AIvta+aaHphzyFv9+92oz5lhR36qAg=
 github.com/macula-io/macula-go-sdk v0.1.0 h1:uo5EFMowVNLbQGVTG2sTRs+LwbiDgIGWqL3BJlB/vA0=
 github.com/macula-io/macula-go-sdk v0.1.0/go.mod h1:kaKn2tQYlhXE7AIvta+aaHphzyFv9+92oz5lhR36qAg=
+github.com/macula-io/macula-go-sdk v0.2.0 h1:jGRciLwRyWJVC+JQ6hNVW1gwDEL4nOFkPUc0E/jRW+c=
+github.com/macula-io/macula-go-sdk v0.2.0/go.mod h1:kaKn2tQYlhXE7AIvta+aaHphzyFv9+92oz5lhR36qAg=
 github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZbAQM=
 github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
 github.com/quic-go/go-ossfuzz-seeds v0.1.0 h1:APacT+iIaNF6fd8AGEiN3bT/Jtkd2jz4v4TzM7MFjy0=

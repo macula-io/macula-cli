@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/hex"
 	"flag"
 	"fmt"
 
@@ -47,7 +46,7 @@ func runIdentity(args []string) int {
 	}
 
 	result := identityResult{
-		NodeID:    hex.EncodeToString(id.NodeID()),
+		NodeID:    hexNodeID(id),
 		Path:      path,
 		Generated: generated,
 	}

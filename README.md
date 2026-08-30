@@ -43,7 +43,15 @@ is that throwaway program, built once and kept.
   separately, so a failure names which stage broke instead of one opaque
   error.
 - **`call`** — one unary RPC call, JSON args in, JSON payload (or a BOLT#4
-  error) out.
+  error) out. `-direct` resolves and dials a station straight from its DHT
+  advertisement instead of depending on gossip; `-ucan` attaches a UCAN
+  token; `-realm-ca`/`-org` verify a direct-dial advertisement's embedded
+  cert chain (Slice 7c Direction B).
+- **`serve`** — advertises a procedure, answers one inbound CALL, exits;
+  the provider-role counterpart to `call`. Same `-direct`/`-cert-chain`
+  flags as `call`, plus `-require-ucan-issuer` to gate the procedure. `
+  -daemon` registers it with a running `daemon` instead (see below) —
+  persistent, many calls, no exit after the first.
 - **`pubsub watch` / `pubsub publish`** — subscribe and stream events as
   newline-delimited JSON, or publish one event and exit.
 - **`stream probe`** — opens a Bidi stream across **two different
@@ -53,6 +61,13 @@ is that throwaway program, built once and kept.
   trip, or upload/download a real file by its MCID.
 - **`identity`** — prints this machine's local identity (node ID), purely
   local, no station involved.
+- **`ucan mint` / `ucan inspect`** — mint a UCAN token signed by the local
+  identity, or decode one's claims without checking its signature.
+- **`daemon start` / `status` / `stop`** — macula-cli's optional long-lived
+  mode: one process holds a single Session open and answers CALLs for
+  whatever `serve -daemon` registers, until stopped. Other `macula-cli`
+  invocations control it over a local Unix domain control socket instead
+  of each dialing the mesh fresh — see [Daemon mode](#daemon-mode) below.
 
 Every failure is reported through Macula's own
 [BOLT#4 error taxonomy](https://github.com/macula-io/macula-go-sdk/blob/master/bolt4/bolt4.go)
@@ -74,7 +89,10 @@ plus a `SIGPIPE`/`pipefail` bug in `install.sh` and a Windows/macOS
 identity-path bug in `v0.1.0`, both fixed in `v0.1.1`). `identity`,
 `pubsub publish`, and `content put`/`get` were added afterward, driven by
 [`macula-mcp`](https://github.com/macula-io/macula-mcp)'s rework onto this
-CLI, and shipped in `v0.1.2`. CI checks
+CLI, and shipped in `v0.1.2`. `ucan`/`-direct`/`-cert-chain`/
+`-require-ucan-issuer` (on `call`/`serve`) and daemon mode (`daemon`,
+`serve -daemon`) followed, matching `macula-go-sdk`'s own direct-dial,
+UCAN, cert-chain, and `ServeForever` additions. CI checks
 `gofmt`/`vet`/`build` plus a GoReleaser snapshot build, `shellcheck` on the
 install/uninstall scripts, and a PowerShell parse-check — no unit tests,
 since every command talks to a live station by design; verification is
@@ -134,19 +152,68 @@ is rejected, not silently coerced).
 ## Architecture
 
 ```
-cmd/macula-cli/          one file per subcommand, single package — a 5-command
-                          CLI's argument-parsing glue doesn't earn 5 internal packages
+cmd/macula-cli/          one file per subcommand, single package — argument-parsing
+                          glue thin enough that it doesn't earn per-command packages
 internal/identitystore/  load-or-mint a puzzle-hardened identity, persisted to disk
 internal/report/         one --json envelope / human-text choice, BOLT#4-aware errors
 internal/wirevalue/      JSON <-> cbor.Value bridge for --args and output
+internal/daemon/         daemon mode: the long-lived Session + registry + control
+                          socket "serve -daemon"/"daemon status"/"daemon stop" talk to
 ```
 
 | Package | Role |
 |---|---|
-| `cmd/macula-cli` | The five subcommands (`connect`, `call`, `pubsub`, `stream`, `content`) and their flag parsing. Thin — every command is a short, direct sequence of real SDK calls. |
+| `cmd/macula-cli` | One file per subcommand (`connect`, `call`, `serve`, `pubsub`, `stream`, `content`, `identity`, `ucan`, `daemon`) and their flag parsing. Thin — every one-shot command is a short, direct sequence of real SDK calls. |
 | `internal/identitystore` | Loads a persisted identity or mints a fresh puzzle-hardened one (`identity.Generate` — never the unhardened path). |
 | `internal/report` | Shared `--json` / human-text output, surfaces BOLT#4 code/name/retryable for wire-level failures. |
 | `internal/wirevalue` | Converts between JSON (what a human or an agent types/reads) and `cbor.Value` (what the wire actually carries) — deliberately narrow, since Macula's CBOR has no `bool` and no float/int ambiguity the way JSON does. |
+| `internal/daemon` | `Server` holds one Session and a mutex-guarded procedure registry, driving `macula-go-sdk`'s `ServeForever`; `Do`/`Listen`/`SocketPath` are the newline-delimited-JSON control-socket client and server halves `cmd/macula-cli`'s daemon-aware commands share. |
+
+---
+
+## Daemon mode
+
+Every command above is one-shot: connect, do the one thing, exit. That's
+deliberate for `call`/`pubsub publish`/`content put`, but `serve`'s own
+one-shot shape means a real long-lived server means wrapping it in your own
+shell loop, and there's no way to keep a procedure re-advertised or a
+subscription alive without a process staying up the whole time.
+
+**Daemon mode** is the alternative: one `macula-cli daemon start` process
+holds a single Session open, and other `macula-cli` invocations control it
+over a local Unix domain socket instead of each dialing the mesh fresh —
+the same shape as `ssh-agent` or `dockerd`, not a second product.
+
+```bash
+# Start the daemon (foreground -- pair with a process supervisor for
+# unattended use; Ctrl-C/SIGTERM/"daemon stop" all stop it cleanly).
+macula-cli daemon start station-de-frankfurt.macula.io:4433 &
+
+# Register a procedure -- answers as many calls as arrive, not just one.
+macula-cli serve -daemon -reply '{"pong":1}' my.echo
+
+# From anywhere else: ordinary "call" reaches it exactly like any other
+# advertised procedure -- the daemon is invisible to callers.
+macula-cli call station-de-frankfurt.macula.io:4433 my.echo
+
+# Inspect or stop it.
+macula-cli daemon status
+macula-cli serve -daemon -stop my.echo
+macula-cli daemon stop
+```
+
+More than one daemon instance can run side by side via `-socket-name`
+(e.g. one per identity/realm) — every daemon-aware command takes it, and
+`-socket` overrides the derived path outright. The control socket lives
+under a short, UID-scoped temp directory (`os.TempDir()`, not the user
+config directory `identitystore` uses for the identity file) — a Unix
+domain socket path is capped at roughly 108 bytes, and a config-dir-rooted
+path can exceed that depending on `$HOME`; found live, not assumed.
+
+`serve -daemon`'s registration flags (`-direct`, `-cert-chain`,
+`-require-ucan-issuer`, `-reply`/`-echo`) are the same ones the one-shot
+`serve` takes; it just sends them to the daemon instead of dialing the
+mesh itself and takes no `<host[:port]>` (the daemon already has one).
 
 ---
 

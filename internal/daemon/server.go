@@ -196,19 +196,9 @@ func (srv *Server) Register(p ServeRegisterParams) (ServeRegisterResult, error) 
 		ttl = time.Hour
 	}
 
-	replyValue := cbor.Null()
-	if len(p.Reply) > 0 {
-		replyValue, err = wirevalue.FromJSON(p.Reply)
-		if err != nil {
-			return ServeRegisterResult{}, fmt.Errorf("reply: %w", err)
-		}
-	}
-	echo := p.Echo
-	handler := func(payload cbor.Value) (cbor.Value, error) {
-		if echo {
-			return payload, nil
-		}
-		return replyValue, nil
+	handler, err := BuildReplyHandler(p.Reply, p.Echo, p.Exec, time.Duration(p.ExecTimeoutMs)*time.Millisecond)
+	if err != nil {
+		return ServeRegisterResult{}, err
 	}
 
 	policy := ucan.Open

@@ -239,8 +239,8 @@ $ macula-cli call --json --direct station-de-frankfurt.macula.io macula_cli.howt
 ## 4. `serve` — advertise and answer
 
 ```bash
-macula-cli serve [--json] [--identity <path>] [--realm <hex>] [--reply '<json>' | --echo] [--timeout 30s] [--direct] [--ttl 1h] [--cert-chain <pem>] [--require-ucan-issuer <hex>] <host[:port]> <procedure>
-macula-cli serve -daemon [--json] [--reply '<json>' | --echo] [--direct] [--ttl 1h] [--cert-chain <pem>] [--require-ucan-issuer <hex>] [-socket-name <name>] <procedure>
+macula-cli serve [--json] [--identity <path>] [--realm <hex>] [--reply '<json>' | --echo | --exec '<cmd>' [--exec-timeout 10s]] [--timeout 30s] [--direct] [--ttl 1h] [--cert-chain <pem>] [--require-ucan-issuer <hex>] <host[:port]> <procedure>
+macula-cli serve -daemon [--json] [--reply '<json>' | --echo | --exec '<cmd>' [--exec-timeout 10s]] [--direct] [--ttl 1h] [--cert-chain <pem>] [--require-ucan-issuer <hex>] [-socket-name <name>] <procedure>
 macula-cli serve -daemon -stop [-socket-name <name>] <procedure>
 ```
 
@@ -248,6 +248,8 @@ macula-cli serve -daemon -stop [-socket-name <name>] <procedure>
 |---|---|---|
 | `--reply` | `null` | the RESULT payload to send back |
 | `--echo` | off | reply with the caller's own payload instead of `--reply` |
+| `--exec` | — | compute the RESULT per call instead: run this shell command, the call's payload as JSON on its stdin, its stdout parsed as the reply. Cannot combine with `--reply`/`--echo` (§9's `serve -daemon -exec`) |
+| `--exec-timeout` | `10s` | with `--exec`, how long one invocation may run before it's killed and the call fails with a timeout error |
 | `--timeout` | `30s` | connect timeout, plus how long to wait for one inbound CALL |
 | `--direct` | off | also publish a signed direct-dial DHT advertisement — pair with `call --direct` |
 | `--ttl` | `1h` | direct-dial advertisement TTL (only meaningful with `--direct`) |
@@ -664,6 +666,78 @@ macula_cli.daemon_smoke_test unregistered
 
 $ macula-cli call station-de-frankfurt.macula.io:4433 macula_cli.daemon_smoke_test
 error: call failed: unknown_next_peer (code=1) (bolt4=unknown_next_peer, retryable=true)
+```
+
+### `serve -daemon -exec`
+
+```bash
+macula-cli serve -daemon -exec '<shell command>' [-exec-timeout <duration>] <procedure>
+```
+
+`-reply`/`-echo` both answer from something already known at
+registration time. `-exec` is the one registration mode that computes a
+reply PER CALL: the given shell command runs once per inbound CALL, gets
+the call's payload as one JSON document on stdin, and whatever it writes
+to stdout becomes the reply (empty stdout replies `null`). Cannot be
+combined with `-reply`/`-echo` — rejected at parse time, before ever
+registering anything:
+
+```
+$ macula-cli serve -daemon -exec 'true' -reply '{"x":1}' station-de-frankfurt.macula.io:4433 macula_cli.should_not_register
+error: -exec cannot be combined with -reply or -echo (it computes the reply itself, per call)
+```
+
+Real per-call computation, not a cached value — registered once, called
+three times with different input, three different genuinely-computed
+replies (a two-line Node script reading `{n}` from stdin and writing
+`{doubled: n*2, received: n}`):
+
+```
+$ macula-cli serve -daemon -socket-name exectest -exec 'node double_handler.mjs' macula_cli.exec_smoke_test
+{"registered":true,"procedure":"macula_cli.exec_smoke_test"}
+
+$ macula-cli call --json station-de-frankfurt.macula.io:4433 macula_cli.exec_smoke_test -args '{"n":21}'
+{"procedure":"macula_cli.exec_smoke_test","payload":{"doubled":42,"received":21},"duration_ms":53}
+
+$ macula-cli call --json station-de-frankfurt.macula.io:4433 macula_cli.exec_smoke_test -args '{"n":100}'
+{"procedure":"macula_cli.exec_smoke_test","payload":{"doubled":200,"received":100},"duration_ms":53}
+
+$ macula-cli call --json station-de-frankfurt.macula.io:4433 macula_cli.exec_smoke_test -args '{"n":-7}'
+{"procedure":"macula_cli.exec_smoke_test","payload":{"doubled":-14,"received":-7},"duration_ms":55}
+```
+
+**Every procedure a daemon serves shares one `serveSession`** (see the
+README's "Three Sessions, not one") — a hung `-exec` would block every
+OTHER registered procedure too, not just its own, so `-exec-timeout`
+(10s default) kills it. A non-zero exit or invalid JSON on stdout are
+treated the same way: all three become a normal ERROR reply to the
+caller, never a crash of the daemon or of any OTHER procedure it's
+serving — verified live, one working procedure kept answering correctly
+throughout while three sibling registrations were deliberately made to
+fail each of these three ways:
+
+```
+$ macula-cli call --json station-de-frankfurt.macula.io:4433 macula_cli.exec_fail_test
+error: call failed: unknown_error (code=15): exec "exit 1": exit status 1
+
+$ macula-cli call --json station-de-frankfurt.macula.io:4433 macula_cli.exec_badjson_test
+error: call failed: unknown_error (code=15): exec "echo 'not json'": stdout is not valid JSON: wirevalue: invalid JSON: invalid character 'o' in literal null (expecting 'u')
+
+$ macula-cli call --json -timeout 10s station-de-frankfurt.macula.io:4433 macula_cli.exec_timeout_test
+error: call failed: unknown_error (code=15): exec "sleep 5": timed out after 1s
+# (registered with -exec-timeout 1s -- correctly killed at 1s, not left running the full 5s sleep)
+
+$ macula-cli call --json -args '{"n":999}' station-de-frankfurt.macula.io:4433 macula_cli.exec_smoke_test
+{"procedure":"macula_cli.exec_smoke_test","payload":{"doubled":1998,"received":999},"duration_ms":56}
+```
+
+Also works on the one-shot (non-`-daemon`) `serve` — same `-exec`/
+`-exec-timeout` flags, same contract, just for exactly one call before
+exiting:
+
+```
+$ macula-cli serve -exec 'node double_handler.mjs' station-de-frankfurt.macula.io:4433 macula_cli.exec_direct_test --json
+{"procedure":"macula_cli.exec_direct_test","payload":{"n":5},"replied":{"doubled":10,"received":5},"duration_ms":5022}
 ```
 
 ### `call -via-daemon`

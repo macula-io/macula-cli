@@ -53,7 +53,9 @@ is that throwaway program, built once and kept.
   the provider-role counterpart to `call`. Same `-direct`/`-cert-chain`
   flags as `call`, plus `-require-ucan-issuer` to gate the procedure. `
   -daemon` registers it with a running `daemon` instead (see below) —
-  persistent, many calls, no exit after the first.
+  persistent, many calls, no exit after the first. `-exec <command>`
+  computes the reply per call (JSON in on stdin, JSON out on stdout)
+  instead of a fixed `-reply`/`-echo`.
 - **`pubsub watch` / `pubsub publish`** — subscribe and stream events as
   newline-delimited JSON, or publish one event and exit. `watch -daemon`
   taps into a daemon's own subscription instead of subscribing itself;
@@ -213,6 +215,13 @@ macula-cli daemon start station-de-frankfurt.macula.io:4433 &
 # Register a procedure -- answers as many calls as arrive, not just one.
 macula-cli serve -daemon -reply '{"pong":1}' my.echo
 
+# Or -exec: a real, per-call computed reply instead of a fixed one --
+# the script gets the call's JSON payload on stdin, its stdout becomes
+# the reply. A non-zero exit, a timeout, or invalid JSON on stdout all
+# become a normal ERROR reply to the caller, not a crash of the daemon
+# or any other procedure it's serving.
+macula-cli serve -daemon -exec './double.sh' my.double
+
 # From anywhere else: ordinary "call" reaches it exactly like any other
 # advertised procedure -- the daemon is invisible to callers. Or route
 # through the daemon's own connection instead of dialing fresh:
@@ -260,9 +269,29 @@ assumed from `os.MkdirAll` succeeding — refused live against a
 deliberately world-writable planted directory during testing.
 
 `serve -daemon`'s registration flags (`-direct`, `-cert-chain`,
-`-require-ucan-issuer`, `-reply`/`-echo`) are the same ones the one-shot
-`serve` takes; it just sends them to the daemon instead of dialing the
-mesh itself and takes no `<host[:port]>` (the daemon already has one).
+`-require-ucan-issuer`, `-reply`/`-echo`/`-exec`/`-exec-timeout`) are the
+same ones the one-shot `serve` takes; it just sends them to the daemon
+instead of dialing the mesh itself and takes no `<host[:port]>` (the
+daemon already has one).
+
+**`-exec` is the only registration mode that computes anything per
+call** — `-reply`/`-echo` both answer from something already known at
+registration time (a fixed payload, or the caller's own payload bounced
+back), since neither this control protocol nor the daemon itself has any
+other way to hand a registration a live answer. `-exec` runs the given
+shell command once per inbound CALL (`sh -c` on Linux/macOS, `cmd /C` on
+Windows), writing the payload as one JSON document to its stdin and
+reading its entire stdout back as the reply (empty stdout replies
+`null`). Every procedure a daemon serves shares its one `serveSession`
+(see "Three Sessions, not one" above) — a hung exec would block every
+OTHER registered procedure too, not just its own, so `-exec-timeout`
+(10s default) kills it and turns the call into a normal ERROR reply
+instead. A non-zero exit or invalid JSON on stdout do the same — none of
+the three can crash the shared serve loop, verified live: three
+procedures registered to fail three different ways (non-zero exit,
+non-JSON stdout, a `sleep` past its timeout) all correctly answered
+their callers with an ERROR while a fourth, working procedure kept
+computing real per-call replies throughout.
 
 ---
 

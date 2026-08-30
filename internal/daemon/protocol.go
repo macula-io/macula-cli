@@ -65,11 +65,21 @@ const (
 // ServeRegisterParams registers a persistent handler with a running
 // daemon -- the daemon-mode counterpart to one invocation of the
 // one-shot "serve" subcommand's own flags.
+//
+// Exec, when set, takes precedence over Reply/Echo -- see
+// BuildReplyHandler. It's the only one of the three that computes a
+// reply PER CALL rather than once at registration time: Reply/Echo
+// answer every call with either the same fixed payload or the caller's
+// own payload bounced back, since neither this control protocol nor
+// "macula-cli daemon" has any other way to hand a registration a live
+// answer.
 type ServeRegisterParams struct {
 	Procedure         string          `json:"procedure"`
 	RealmHex          string          `json:"realm_hex,omitempty"`
 	Reply             json.RawMessage `json:"reply,omitempty"`
 	Echo              bool            `json:"echo,omitempty"`
+	Exec              string          `json:"exec,omitempty"`
+	ExecTimeoutMs     int64           `json:"exec_timeout_ms,omitempty"`
 	Direct            bool            `json:"direct,omitempty"`
 	TTLSeconds        int64           `json:"ttl_seconds,omitempty"`
 	CertChainPEM      string          `json:"cert_chain_pem,omitempty"`

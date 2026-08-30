@@ -36,11 +36,18 @@ import (
 // *configured* -reply value even though an "unauthorized" ERROR frame,
 // not that payload, is what actually went out over the wire.
 type serveResult struct {
-	Procedure  string `json:"procedure"`
-	Refused    bool   `json:"refused,omitempty"`
-	Payload    any    `json:"payload,omitempty"`
-	Replied    any    `json:"replied,omitempty"`
-	DurationMs int64  `json:"duration_ms"`
+	Procedure string `json:"procedure"`
+	Refused   bool   `json:"refused,omitempty"`
+	Payload   any    `json:"payload,omitempty"`
+	Replied   any    `json:"replied,omitempty"`
+	// HandlerError is set when -exec's command failed, timed out, or
+	// produced invalid JSON -- a normal outcome for -exec (it's a real
+	// caller-visible ERROR reply, sent successfully), not a bug, so
+	// this is still report.Ok, same reasoning as Refused above. Replied
+	// is omitted in this case: there's no reply value to show, only an
+	// error.
+	HandlerError string `json:"handler_error,omitempty"`
+	DurationMs   int64  `json:"duration_ms"`
 }
 
 func runServe(args []string) int {
@@ -50,6 +57,8 @@ func runServe(args []string) int {
 	realmHex := fs.String("realm", "", "32-byte realm as hex (default: all-zero realm)")
 	replyJSON := fs.String("reply", "null", "the RESULT payload to send back, as a JSON document")
 	echo := fs.Bool("echo", false, "reply with the caller's own payload instead of -reply")
+	execCmd := fs.String("exec", "", "compute the RESULT per call instead of a fixed -reply: run this shell command, writing the call's payload as one JSON document to its stdin and parsing its entire stdout as the reply (empty stdout replies null); a non-zero exit, a timeout, or invalid JSON on stdout all become a normal ERROR reply to the caller, not a crash. Takes precedence over -reply/-echo.")
+	execTimeout := fs.Duration("exec-timeout", daemon.DefaultExecTimeout, "with -exec, how long one invocation may run before it's killed and the call fails with a timeout error")
 	timeout := fs.Duration("timeout", 30*time.Second, "connect timeout, plus how long to wait for one inbound CALL")
 	direct := fs.Bool("direct", false, "also publish a signed direct-dial DHT advertisement (directdial.AdvertiseDirect), so a caller can resolve and dial this station directly instead of depending on advertise-gossip having propagated a route")
 	ttl := fs.Duration("ttl", time.Hour, "direct-dial advertisement TTL (only meaningful with -direct)")
@@ -76,6 +85,13 @@ func runServe(args []string) int {
 			"With -require-ucan-issuer, refuses any CALL that doesn't present a valid\n"+
 			"UCAN token from that issuer, before the handler ever runs -- composes\n"+
 			"freely with -direct, since gating and advertising are independent.\n\n"+
+			"With -exec, the reply is computed per call instead of a fixed -reply:\n"+
+			"the given shell command runs once per inbound CALL, receiving the\n"+
+			"call's payload as one JSON document on stdin and answering with\n"+
+			"whatever JSON it writes to stdout (empty stdout replies null). A\n"+
+			"non-zero exit, a timeout (-exec-timeout), or invalid JSON on stdout\n"+
+			"all become a normal ERROR reply to the caller, not a command failure.\n"+
+			"Cannot be combined with -reply/-echo.\n\n"+
 			"With -daemon, this registers <procedure> with an already-running\n"+
 			"\"macula-cli daemon start\" instead of dialing the mesh itself, answers\n"+
 			"however many calls arrive until -stop unregisters it or the daemon\n"+
@@ -88,6 +104,9 @@ func runServe(args []string) int {
 	}
 	if *certChainFile != "" && !*direct {
 		return report.Fail(*jsonOut, fmt.Errorf("-cert-chain requires -direct (cert-chain authorization is a direct-dial-only feature)"), nil)
+	}
+	if *execCmd != "" && (*echo || *replyJSON != "null") {
+		return report.Fail(*jsonOut, fmt.Errorf("-exec cannot be combined with -reply or -echo (it computes the reply itself, per call)"), nil)
 	}
 	var requiredIssuer []byte
 	if *requireUcanIssuer != "" {
@@ -116,6 +135,8 @@ func runServe(args []string) int {
 			requireUcanIssuer: *requireUcanIssuer,
 			replyJSON:         *replyJSON,
 			echo:              *echo,
+			execCmd:           *execCmd,
+			execTimeout:       *execTimeout,
 		})
 	}
 	if fs.NArg() != 2 {
@@ -133,7 +154,7 @@ func runServe(args []string) int {
 	if err != nil {
 		return report.Fail(*jsonOut, err, nil)
 	}
-	replyValue, err := wirevalue.FromJSON([]byte(*replyJSON))
+	replyHandler, err := daemon.BuildReplyHandler(json.RawMessage(*replyJSON), *echo, *execCmd, *execTimeout)
 	if err != nil {
 		return report.Fail(*jsonOut, fmt.Errorf("-reply: %w", err), nil)
 	}
@@ -183,7 +204,8 @@ func runServe(args []string) int {
 	}
 	defer func() { _ = session.Unadvertise(frame.NewUnadvertiseSpec(realm, procedure, id.NodeID()), id) }()
 
-	var received cbor.Value
+	var received, repliedValue cbor.Value
+	var handlerErr error
 	handlerRan := false
 	lookup := func(gotRealm []byte, gotProcedure string) (connection.CallHandler, bool) {
 		if gotProcedure != procedure {
@@ -192,10 +214,10 @@ func runServe(args []string) int {
 		return func(payload cbor.Value) (cbor.Value, error) {
 			handlerRan = true
 			received = payload
-			if *echo {
-				return payload, nil
-			}
-			return replyValue, nil
+			reply, err := replyHandler(payload)
+			repliedValue = reply
+			handlerErr = err
+			return reply, err
 		}, true
 	}
 
@@ -227,14 +249,30 @@ func runServe(args []string) int {
 		return 0
 	}
 
-	replied := replyValue
-	if *echo {
-		replied = received
+	if handlerErr != nil {
+		// A handler error (only reachable via -exec -- the static
+		// reply/echo path never errors) is still a successfully-sent
+		// reply from ServeOneCall's own point of view, exactly like the
+		// UCAN-refused case above -- a real ERROR frame went out over
+		// the wire, this command didn't fail. Replied is omitted: there
+		// is no reply value, only an error.
+		result := serveResult{
+			Procedure:    procedure,
+			Payload:      wirevalue.ToJSON(received),
+			HandlerError: handlerErr.Error(),
+			DurationMs:   duration,
+		}
+		report.Ok(*jsonOut, result, func() {
+			fmt.Printf("%s served (%d ms) -- handler error, sent to the caller as an ERROR reply: %s\n", procedure, duration, handlerErr)
+			fmt.Printf("  received: %v\n", result.Payload)
+		})
+		return 0
 	}
+
 	result := serveResult{
 		Procedure:  procedure,
 		Payload:    wirevalue.ToJSON(received),
-		Replied:    wirevalue.ToJSON(replied),
+		Replied:    wirevalue.ToJSON(repliedValue),
 		DurationMs: duration,
 	}
 	report.Ok(*jsonOut, result, func() {
@@ -262,6 +300,8 @@ type serveDaemonArgs struct {
 	requireUcanIssuer string
 	replyJSON         string
 	echo              bool
+	execCmd           string
+	execTimeout       time.Duration
 }
 
 // runServeDaemon registers (or, with -stop, unregisters) a.procedure
@@ -299,6 +339,8 @@ func runServeDaemon(a serveDaemonArgs) int {
 		RealmHex:          a.realmHex,
 		Reply:             replyRaw,
 		Echo:              a.echo,
+		Exec:              a.execCmd,
+		ExecTimeoutMs:     a.execTimeout.Milliseconds(),
 		Direct:            a.direct,
 		TTLSeconds:        int64(a.ttl.Seconds()),
 		RequireUcanIssuer: a.requireUcanIssuer,

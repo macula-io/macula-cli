@@ -44,6 +44,8 @@ func run(args []string) int {
 		return runStream(args[1:])
 	case "content":
 		return runContent(args[1:])
+	case "dht":
+		return runDht(args[1:])
 	case "identity":
 		return runIdentity(args[1:])
 	case "ucan":
@@ -81,6 +83,9 @@ Usage:
   macula-cli content probe <host[:port]>               content put/get/verify round trip
   macula-cli content put <host[:port]> <file>          upload a file, print its MCID
   macula-cli content get <host[:port]> <mcid>          download by MCID
+  macula-cli dht find-record <host[:port]> <key-hex>   fetch one DHT record by storage key
+  macula-cli dht find-records <host[:port]> <key-hex>  fetch every record at a storage key
+  macula-cli dht find-records-by-type <host[:port]> <type>  list every record of a type (discovery)
   macula-cli identity                                  print the local identity's node ID
   macula-cli ucan mint <issuer> <audience>             mint a UCAN token, signed by the local identity
   macula-cli ucan inspect <token-file>                 decode a UCAN token's claims (no signature check)

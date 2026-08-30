@@ -66,6 +66,16 @@ is that throwaway program, built once and kept.
   not just that the stream opens.
 - **`content probe` / `put` / `get`** — self-contained put+get+verify round
   trip, or upload/download a real file by its MCID.
+- **`dht find-record` / `find-records` / `find-records-by-type`** — read the
+  mesh's signed DHT record store directly: one record by storage key, every
+  record at a key (the signer-deduped multiset), or every record of a type
+  currently visible from the connecting station. `find-records-by-type
+  procedure_advertisement` is the discovery entry point — every capability
+  a station knows about, with the realm each is scoped to decoded straight
+  out of `procedure_uri` (realm is embedded there, not a separate field; DHT
+  storage itself is always the protocol's own all-zero realm, so none of
+  the three take a `-realm` flag). Each record's signature is checked and
+  reported (`verified`/`verify_error`), never silently assumed good.
 - **`identity`** — prints this machine's local identity (node ID), purely
   local, no station involved.
 - **`ucan mint` / `ucan inspect`** — mint a UCAN token signed by the local
@@ -106,7 +116,21 @@ CLI, and shipped in `v0.1.2`. `ucan`/`-direct`/`-cert-chain`/
 direct-dial, UCAN, cert-chain, and `ServeForever` additions. The daemon's
 three-Session split (see [Daemon mode](#daemon-mode)) was itself a bug fix,
 found live: a first draft sharing one Session between serving and
-`call -via-daemon` intermittently stole its own reply frames. CI checks
+`call -via-daemon` intermittently stole its own reply frames. `dht
+find-record`/`find-records`/`find-records-by-type` followed, wrapping
+`macula-go`'s existing `dht.FindRecord`/`FindRecords`/`FindRecordsByType`
+(itself already complete — this was purely a missing CLI surface). Built to
+answer a real question live, not hypothetically: whether a service's
+capability (`hecate_stations.list_stations`) that `mesh_call`/`call -direct`
+both failed to reach was actually in the DHT at all under any realm.
+`find-records-by-type procedure_advertisement` against the demo fleet
+answered it directly — 16 real records, all a different service's
+(`hecate_mail`, `tube`), none `hecate_stations`'s, confirming the
+advertisement genuinely never landed rather than this being a realm- or
+routing-side problem. Also surfaced, incidentally, that `hecate_mail`
+advertises each of its procedures under two different names (`X.Y` and
+`_/X.Y`) — a pre-existing inconsistency in that service's own advertise
+code, unrelated to this addition and not fixed here. CI checks
 `gofmt`/`vet`/`build` plus a GoReleaser snapshot build, `shellcheck` on the
 install/uninstall scripts, and a PowerShell parse-check — no unit tests,
 since every command talks to a live station by design; verification is

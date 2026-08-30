@@ -8,8 +8,8 @@ import (
 	"net"
 	"time"
 
-	"github.com/macula-io/macula-go-sdk/connection"
-	"github.com/macula-io/macula-go-sdk/transport"
+	"github.com/macula-io/macula-go/connection"
+	"github.com/macula-io/macula-go/transport"
 
 	"github.com/macula-io/macula-cli/internal/report"
 )
@@ -17,7 +17,7 @@ import (
 // connectResult mirrors the three-stage pipeline a real handshake goes
 // through, so a caller can tell exactly where a failure happened
 // instead of getting one opaque "connect failed." This distinction is
-// the whole point of the command: macula-go-sdk's own docs record a
+// the whole point of the command: macula-go's own docs record a
 // real incident where an unhardened identity made QUIC/TLS look
 // perfectly healthy right up until the HELLO silently never arrived,
 // and a separate one where an IPv6-only station with no AAAA record on

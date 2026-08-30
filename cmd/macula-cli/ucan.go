@@ -7,7 +7,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/macula-io/macula-go-sdk/ucan"
+	"github.com/macula-io/macula-go/ucan"
 
 	"github.com/macula-io/macula-cli/internal/report"
 )
@@ -67,7 +67,7 @@ func runUcanMint(args []string) int {
 	fs.Usage = func() {
 		fmt.Fprint(fs.Output(), "Usage: macula-cli ucan mint [flags] <issuer> <audience>\n\n"+
 			"Mints a UCAN token self-issued and signed by the local identity, matching\n"+
-			"macula-go-sdk's ucan.Create exactly -- the same token verifies against\n"+
+			"macula-go's ucan.Create exactly -- the same token verifies against\n"+
 			"macula-rust-sdk, macula-dotnet-sdk, macula-php-sdk, or the Erlang reference.\n"+
 			"<issuer>/<audience> are opaque DID strings, not validated here.\n\nFlags:\n")
 		fs.PrintDefaults()

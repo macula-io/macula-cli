@@ -1,8 +1,8 @@
 // Package wirevalue bridges JSON (what a human or an agent types on the
 // command line, or wants printed back) and cbor.Value (what
-// macula-go-sdk's frames actually carry). Macula's wire model has no
+// macula-go's frames actually carry). Macula's wire model has no
 // bool and no distinct "float vs int" ambiguity the way JSON does — see
-// macula-go-sdk's cbor package doc — so this package is deliberately
+// macula-go's cbor package doc — so this package is deliberately
 // narrow rather than a generic converter.
 package wirevalue
 
@@ -11,7 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/macula-io/macula-go-sdk/cbor"
+	"github.com/macula-io/macula-go/cbor"
 )
 
 // FromJSON parses a JSON document (typically the --args flag) into a

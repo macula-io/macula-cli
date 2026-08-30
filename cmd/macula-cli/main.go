@@ -1,5 +1,5 @@
 // Command macula-cli is a scriptable client for testing, monitoring,
-// and diagnosing the Macula mesh, built directly on macula-go-sdk.
+// and diagnosing the Macula mesh, built directly on macula-go.
 // Every subcommand accepts --json for structured output and reports
 // failures through Macula's own BOLT#4 error vocabulary rather than
 // invented text. It has no interactive/TUI mode by design: the primary

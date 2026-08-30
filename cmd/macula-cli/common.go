@@ -6,7 +6,7 @@ import (
 	"net"
 	"strconv"
 
-	"github.com/macula-io/macula-go-sdk/identity"
+	"github.com/macula-io/macula-go/identity"
 
 	"github.com/macula-io/macula-cli/internal/identitystore"
 )

@@ -11,14 +11,14 @@ import (
 	"sync"
 	"time"
 
-	"github.com/macula-io/macula-go-sdk/bolt4"
-	"github.com/macula-io/macula-go-sdk/cbor"
-	"github.com/macula-io/macula-go-sdk/connection"
-	"github.com/macula-io/macula-go-sdk/directdial"
-	"github.com/macula-io/macula-go-sdk/frame"
-	"github.com/macula-io/macula-go-sdk/identity"
-	"github.com/macula-io/macula-go-sdk/transport"
-	"github.com/macula-io/macula-go-sdk/ucan"
+	"github.com/macula-io/macula-go/bolt4"
+	"github.com/macula-io/macula-go/cbor"
+	"github.com/macula-io/macula-go/connection"
+	"github.com/macula-io/macula-go/directdial"
+	"github.com/macula-io/macula-go/frame"
+	"github.com/macula-io/macula-go/identity"
+	"github.com/macula-io/macula-go/transport"
+	"github.com/macula-io/macula-go/ucan"
 
 	"github.com/macula-io/macula-cli/internal/wirevalue"
 )
@@ -32,7 +32,7 @@ type procKey struct {
 
 // Server holds THREE Sessions to the same station and a
 // dynamically-changing registry of procedures served against one of
-// them -- not one Session doing everything. macula-go-sdk's
+// them -- not one Session doing everything. macula-go's
 // FrameStream.Call/RecvFrame explicitly documents that a shared
 // control stream has "one thing at a time" semantics: any frame
 // arriving while something else is waiting on that same stream gets

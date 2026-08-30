@@ -8,12 +8,12 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/macula-io/macula-go-sdk/cbor"
-	"github.com/macula-io/macula-go-sdk/connection"
-	"github.com/macula-io/macula-go-sdk/frame"
-	"github.com/macula-io/macula-go-sdk/identity"
-	"github.com/macula-io/macula-go-sdk/stream"
-	"github.com/macula-io/macula-go-sdk/transport"
+	"github.com/macula-io/macula-go/cbor"
+	"github.com/macula-io/macula-go/connection"
+	"github.com/macula-io/macula-go/frame"
+	"github.com/macula-io/macula-go/identity"
+	"github.com/macula-io/macula-go/stream"
+	"github.com/macula-io/macula-go/transport"
 
 	"github.com/macula-io/macula-cli/internal/report"
 )
@@ -37,7 +37,7 @@ type streamProbeResult struct {
 }
 
 // runStreamProbe is macula-cli's general-purpose version of the same
-// diagnostic macula-go-sdk's own TestLiveCrossStationStreamingRoundTrip
+// diagnostic macula-go's own TestLiveCrossStationStreamingRoundTrip
 // / TestLiveCrossStationStreamingMultiHop live tests hard-code against
 // fixed station pairs (see that repo, 2026-08-29): advertise on the
 // provider, open a Bidi stream from the caller against a DIFFERENT
@@ -59,7 +59,7 @@ func runStreamProbe(args []string) int {
 		fmt.Fprint(fs.Output(), "Usage: macula-cli stream probe [flags] --provider <host[:port]> --caller <host[:port]>\n\n"+
 			"Opens a Bidi stream from a caller on one station to a provider on ANOTHER\n"+
 			"station and confirms data flows both ways through the relay — the same\n"+
-			"round trip macula-go-sdk's own multi-hop live tests run, generalized to any\n"+
+			"round trip macula-go's own multi-hop live tests run, generalized to any\n"+
 			"pair.\n\nFlags:\n")
 		fs.PrintDefaults()
 	}

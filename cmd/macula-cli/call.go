@@ -10,11 +10,11 @@ import (
 	"os"
 	"time"
 
-	"github.com/macula-io/macula-go-sdk/bolt4"
-	"github.com/macula-io/macula-go-sdk/connection"
-	"github.com/macula-io/macula-go-sdk/directdial"
-	"github.com/macula-io/macula-go-sdk/frame"
-	"github.com/macula-io/macula-go-sdk/transport"
+	"github.com/macula-io/macula-go/bolt4"
+	"github.com/macula-io/macula-go/connection"
+	"github.com/macula-io/macula-go/directdial"
+	"github.com/macula-io/macula-go/frame"
+	"github.com/macula-io/macula-go/transport"
 
 	"github.com/macula-io/macula-cli/internal/daemon"
 	"github.com/macula-io/macula-cli/internal/report"
@@ -38,7 +38,7 @@ func runCall(args []string) int {
 	direct := fs.Bool("direct", false, "resolve the procedure's DHT direct-dial advertisement and call its server directly, instead of routing the call through <host>'s own advertise-gossip routes")
 	realmCA := fs.String("realm-ca", "", "PEM file: realm CA to verify against for cert-chain-authorized direct-dial (requires -direct and -org)")
 	org := fs.String("org", "", "expected org name for cert-chain-authorized direct-dial (requires -direct and -realm-ca)")
-	ucanFile := fs.String("ucan", "", "path to a UCAN token file to attach to the call -- NOT composable with -direct: macula-go-sdk's direct-dial call path does not currently accept a UCAN token")
+	ucanFile := fs.String("ucan", "", "path to a UCAN token file to attach to the call -- NOT composable with -direct: macula-go's direct-dial call path does not currently accept a UCAN token")
 	viaDaemon := fs.Bool("via-daemon", false, "route this call through a running \"macula-cli daemon\" instead of dialing the mesh directly -- reuses its already-open Session, takes no <host[:port]>. Not composable with -direct.")
 	socketName := fs.String("socket-name", daemon.DefaultName, "with -via-daemon, the target daemon instance's -socket-name")
 	socketPath := fs.String("socket", "", "with -via-daemon, control socket path (default: derived from -socket-name)")
@@ -73,7 +73,7 @@ func runCall(args []string) int {
 		return report.Fail(*jsonOut, fmt.Errorf("-realm-ca/-org require -direct (cert-chain authorization is a direct-dial-only feature)"), nil)
 	}
 	if *ucanFile != "" && *direct {
-		return report.Fail(*jsonOut, fmt.Errorf("-ucan cannot be combined with -direct: macula-go-sdk's directdial.Call/CallWithCertChain do not accept a UCAN token today -- attach a UCAN only for a plain call"), nil)
+		return report.Fail(*jsonOut, fmt.Errorf("-ucan cannot be combined with -direct: macula-go's directdial.Call/CallWithCertChain do not accept a UCAN token today -- attach a UCAN only for a plain call"), nil)
 	}
 	if *viaDaemon && *direct {
 		return report.Fail(*jsonOut, fmt.Errorf("-via-daemon cannot be combined with -direct: the daemon's Session is bound to one already-connected station, direct-dial resolves and dials a different one per call"), nil)

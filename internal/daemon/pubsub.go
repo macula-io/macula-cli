@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/macula-io/macula-go-sdk/frame"
+	"github.com/macula-io/macula-go/frame"
 
 	"github.com/macula-io/macula-cli/internal/wirevalue"
 )
@@ -37,7 +37,7 @@ type subscription struct {
 
 // subscriptionPollInterval bounds how long a single RecvEvent wait on
 // srv.subSession blocks between checking ctx -- mirrors
-// macula-go-sdk's own subscriberPollInterval reasoning exactly.
+// macula-go's own subscriberPollInterval reasoning exactly.
 const subscriptionPollInterval = 2 * time.Second
 
 // runSubscriptionLoop is the ONLY goroutine that ever reads

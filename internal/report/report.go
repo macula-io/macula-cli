@@ -1,7 +1,7 @@
 // Package report gives every macula-cli subcommand one consistent way
 // to emit a result: a JSON envelope for scripts/agents, or a plain
 // human-readable summary, from the same data. Failures are reported
-// through Macula's own BOLT#4 vocabulary (see macula-go-sdk's bolt4
+// through Macula's own BOLT#4 vocabulary (see macula-go's bolt4
 // package) rather than ad hoc text, so a caller parsing --json output
 // gets the same failure taxonomy the wire protocol itself uses.
 package report

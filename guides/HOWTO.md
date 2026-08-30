@@ -123,7 +123,7 @@ Runs the handshake as three separately timed stages — DNS, raw QUIC/TLS,
 then the full CONNECT/HELLO handshake — and reports which one failed, rather
 than one opaque "connect failed."
 
-**Why this is three stages and not one call**: macula-go-sdk's own docs
+**Why this is three stages and not one call**: macula-go's own docs
 record two real silent-failure classes that a single pass/fail result would
 hide completely — an unhardened identity that makes QUIC/TLS look perfectly
 healthy right up until the HELLO never arrives, and an IPv6-only station
@@ -166,10 +166,10 @@ macula-cli call -via-daemon [--json] [--realm <hex>] [--args '<json>'] [--timeou
 | `--timeout` | `15s` | connect + call timeout |
 | `--direct` | off | resolve the procedure's DHT direct-dial advertisement and dial its server directly, instead of routing through `<host>`'s own advertise-gossip routes |
 | `--realm-ca` / `--org` | — | with `--direct`, only trust an advertisement whose embedded cert chain validates to this CA and names this org (Slice 7c Direction B) — must be given together |
-| `--ucan` | — | attach a token from this file to a PLAIN (non-direct) call — **not composable with `--direct`**, macula-go-sdk's direct-dial call path doesn't accept a token today |
+| `--ucan` | — | attach a token from this file to a PLAIN (non-direct) call — **not composable with `--direct`**, macula-go's direct-dial call path doesn't accept a token today |
 | `-via-daemon` | off | route through a running `daemon` instead of dialing fresh — see §9. Takes no `<host[:port]>`; not composable with `--direct` |
 
-**Macula's wire protocol has no `bool` type at all** (see macula-go-sdk's
+**Macula's wire protocol has no `bool` type at all** (see macula-go's
 `cbor` package doc) — `--args '{"active": true}'` is rejected outright with
 an explicit error rather than silently coerced into something that isn't
 what you typed:
@@ -181,7 +181,7 @@ error: wirevalue: JSON boolean true has no wire representation (macula's CBOR ha
 
 A call against a procedure nothing has advertised comes back as a normal
 BOLT#4 error, not a crash — this is the expected shape of "nobody's
-listening," and it's what `macula-go-sdk`'s own `examples/quickstart`
+listening," and it's what `macula-go`'s own `examples/quickstart`
 currently gets calling `io.macula.echo` too, since that procedure isn't
 presently advertised on the demo fleet:
 
@@ -415,7 +415,7 @@ This is the generalized, on-demand version of the exact check that caught a
 real cross-station relay bug on 2026-08-29: `STREAM_OPEN` routed correctly
 across stations, but the `STREAM_DATA` frame that followed silently never
 arrived (root cause: a missing `signer` field a second relay hop needs — see
-`macula-go-sdk`'s `TestLiveCrossStationStreamingMultiHop` for the full
+`macula-go`'s `TestLiveCrossStationStreamingMultiHop` for the full
 writeup). This command reports the three stages of that scenario
 **separately** — `open_routed`, `provider_received_caller_frame`,
 `caller_received_provider_frame` — instead of one pass/fail, so a partial
@@ -448,7 +448,7 @@ running several probes back to back in the same process intermittently hit
 `Accept` timeouts at 5s/20s that reordering proved were about *execution
 position*, not the station pair or the relay itself (a client-side
 session-teardown timing artifact between rapid sequential live connects,
-see `macula-go-sdk`'s own commit `4a11478`). If you're scripting many probes
+see `macula-go`'s own commit `4a11478`). If you're scripting many probes
 in a tight loop, leave a real gap between them rather than trusting a lower
 `--propagation-wait` to save time.
 
@@ -539,7 +539,7 @@ macula-cli ucan inspect [--json] <token-file>
 
 Both are purely local — no station, no network, same shape as `identity`.
 `mint` self-issues and signs a token with the local identity, matching
-macula-go-sdk's `ucan.Create` exactly (spec 0.10.0, confirmed against the
+macula-go's `ucan.Create` exactly (spec 0.10.0, confirmed against the
 Erlang reference's own NIF source, not the newer incompatible 1.0.0-rc.1
 IPLD spec) — the same token verifies against macula-rust-sdk,
 macula-dotnet-sdk, macula-php-sdk, or the Erlang reference. `<issuer>`/
@@ -621,7 +621,7 @@ connects three times: one Session (the real, persisted identity) owns
 serving and every advertisement; a second, ephemeral-identity Session is
 dedicated to `call -via-daemon`; a third, separately ephemeral, is
 dedicated to every `pubsub subscribe`d topic. A first draft sharing one
-Session for everything hit macula-go-sdk's documented "control stream is
+Session for everything hit macula-go's documented "control stream is
 one thing at a time" limitation directly: answering inbound calls while
 also making an outbound one intermittently stole the reply meant for the
 outbound caller (`connection: read stream: deadline exceeded`, non-
@@ -750,7 +750,7 @@ subscribed:
 ## 10. Reading a BOLT#4 error
 
 Every wire-level `call`/`stream probe` failure carries the code Macula's
-[BOLT#4 taxonomy](https://github.com/macula-io/macula-go-sdk/blob/master/bolt4/bolt4.go)
+[BOLT#4 taxonomy](https://github.com/macula-io/macula-go/blob/master/bolt4/bolt4.go)
 defines, printed as `bolt4=<name>` in human mode or `bolt4_name` /
 `bolt4_code` / `retryable` in `--json`. The ones you'll actually run into
 testing against the demo fleet:
@@ -767,5 +767,5 @@ testing against the demo fleet:
 ## 11. See also
 
 - [`README.md`](../README.md) — what macula-cli is, architecture overview, relationship to the other repos
-- [`macula-go-sdk`](https://github.com/macula-io/macula-go-sdk) — the SDK every command in this repo is built directly on; its own `plans/PLAN_WIRE_PROTOCOL.md` documents the wire protocol these commands exercise
+- [`macula-go`](https://github.com/macula-io/macula-go) — the SDK every command in this repo is built directly on; its own `plans/PLAN_WIRE_PROTOCOL.md` documents the wire protocol these commands exercise
 - [`macula-station`](https://github.com/macula-io/macula-station)'s [`docs/`](https://github.com/macula-io/macula-station/tree/master/docs) — real production incidents (`CASCADE_INVESTIGATION.md`, `PUBSUB_RESIGN_LOOP_LESSON.md`, and others) that are useful context for what a `stream probe`/`call` failure might actually mean on the station side

@@ -21,7 +21,7 @@
 ## What is macula-cli?
 
 A **scriptable client**, not an operator dashboard — one small Go binary,
-built directly on [`macula-go-sdk`](https://github.com/macula-io/macula-go-sdk),
+built directly on [`macula-go`](https://github.com/macula-io/macula-go),
 that exercises the real wire protocol against a real
 [macula-station](https://github.com/macula-io/macula-station) and reports
 exactly what happened. No TUI, no interactive mode: the primary consumer is
@@ -76,7 +76,7 @@ is that throwaway program, built once and kept.
   of each dialing the mesh fresh — see [Daemon mode](#daemon-mode) below.
 
 Every failure is reported through Macula's own
-[BOLT#4 error taxonomy](https://github.com/macula-io/macula-go-sdk/blob/master/bolt4/bolt4.go)
+[BOLT#4 error taxonomy](https://github.com/macula-io/macula-go/blob/master/bolt4/bolt4.go)
 (`unknown_next_peer`, `temporary_relay_failure`, etc.) rather than invented
 text, so a caller parsing output gets the same failure vocabulary the wire
 protocol itself uses.
@@ -100,7 +100,7 @@ identity-path bug in `v0.1.0`, both fixed in `v0.1.1`). `identity`,
 CLI, and shipped in `v0.1.2`. `ucan`/`-direct`/`-cert-chain`/
 `-require-ucan-issuer` (on `call`/`serve`) and daemon mode (`daemon`,
 `serve -daemon`, then `call -via-daemon` and `pubsub subscribe`/`watch
--daemon`/`unsubscribe`) followed, matching `macula-go-sdk`'s own
+-daemon`/`unsubscribe`) followed, matching `macula-go`'s own
 direct-dial, UCAN, cert-chain, and `ServeForever` additions. The daemon's
 three-Session split (see [Daemon mode](#daemon-mode)) was itself a bug fix,
 found live: a first draft sharing one Session between serving and
@@ -108,11 +108,19 @@ found live: a first draft sharing one Session between serving and
 `gofmt`/`vet`/`build` plus a GoReleaser snapshot build, `shellcheck` on the
 install/uninstall scripts, and a PowerShell parse-check — no unit tests,
 since every command talks to a live station by design; verification is
-"run it against the fleet," same convention `macula-go-sdk`'s own
+"run it against the fleet," same convention `macula-go`'s own
 `live`-tagged tests follow.
 
-Unlike this repo, `macula-go-sdk` itself has never been tagged at all;
-`go install ...@latest` there resolves to the tip of `master`.
+`macula-go` is now tagged too (`v0.3.0`, current as of the rename below) —
+this repo pins an exact tag in `go.mod` rather than a floating pseudo-version,
+same as any other dependency.
+
+**2026-08-30: every `macula-{language}-sdk` sibling repo dropped the
+redundant "-sdk" suffix** (`macula-go-sdk`→`macula-go`,
+`macula-rust-sdk`(-ffi)→`macula-rust`(-ffi), `macula-php-sdk`→`macula-php`,
+`macula-dotnet-sdk`→`macula-dotnet`). This repo's own name is unaffected
+(it was never `macula-cli-sdk`); only its `go.mod` dependency and doc
+links moved to `github.com/macula-io/macula-go`.
 
 **Not yet built:** anything bridging macula-station's loopback-only admin
 API (`/health`, `/wire`, `/dht/stats`, ...) — that needs an SSH tunnel per
@@ -180,7 +188,7 @@ internal/daemon/         daemon mode: three long-lived Sessions (serve/call/subs
 | `internal/identitystore` | Loads a persisted identity or mints a fresh puzzle-hardened one (`identity.Generate` — never the unhardened path). |
 | `internal/report` | Shared `--json` / human-text output, surfaces BOLT#4 code/name/retryable for wire-level failures. |
 | `internal/wirevalue` | Converts between JSON (what a human or an agent types/reads) and `cbor.Value` (what the wire actually carries) — deliberately narrow, since Macula's CBOR has no `bool` and no float/int ambiguity the way JSON does. |
-| `internal/daemon` | `Server` holds three Sessions (serve/call/subscribe — see [Daemon mode](#daemon-mode)) plus mutex-guarded procedure and subscription registries, driving `macula-go-sdk`'s `ServeForever`; `Do`/`Watch`/`Listen`/`SocketPath` are the newline-delimited-JSON control-socket client and server halves `cmd/macula-cli`'s daemon-aware commands share. |
+| `internal/daemon` | `Server` holds three Sessions (serve/call/subscribe — see [Daemon mode](#daemon-mode)) plus mutex-guarded procedure and subscription registries, driving `macula-go`'s `ServeForever`; `Do`/`Watch`/`Listen`/`SocketPath` are the newline-delimited-JSON control-socket client and server halves `cmd/macula-cli`'s daemon-aware commands share. |
 
 ---
 
@@ -228,7 +236,7 @@ Session (the daemon's real, persisted identity) owns serving and every
 advertisement; a second, ephemeral-identity Session is dedicated to
 `call -via-daemon`; a third, separately ephemeral, is dedicated to every
 `pubsub subscribe`d topic, sharing one receive loop that dispatches by
-topic. This isn't caution for its own sake -- `macula-go-sdk`'s control
+topic. This isn't caution for its own sake -- `macula-go`'s control
 stream is documented as "one thing at a time," and a single-Session build
 of this hit exactly that race live: answering inbound calls while also
 making an outbound one intermittently stole the reply meant for the
@@ -286,7 +294,7 @@ against.
 
 | Repo | Role |
 |---|---|
-| [`macula-io/macula-go-sdk`](https://github.com/macula-io/macula-go-sdk) | The SDK every command in this repo is built directly on — identity, wire protocol, QUIC transport. |
+| [`macula-io/macula-go`](https://github.com/macula-io/macula-go) | The SDK every command in this repo is built directly on — identity, wire protocol, QUIC transport. |
 | [`macula-io/macula-station`](https://github.com/macula-io/macula-station) | The relay station this tool connects to and diagnoses. Its own `docs/` incident writeups are useful context for what a failure here might mean station-side. |
 | `macula-apps/macula-cam2me` | The real pain that motivated this tool: mesh-connectivity issues discovered building a mobile app with no independent way to test the mesh outside the running app. |
 
@@ -299,5 +307,5 @@ Dual-licensed under [Apache-2.0](LICENSE-APACHE) or [MIT](LICENSE-MIT), your cho
 ---
 
 <p align="center">
-  <sub>Built on macula-go-sdk</sub>
+  <sub>Built on macula-go</sub>
 </p>

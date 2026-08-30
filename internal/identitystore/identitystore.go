@@ -8,7 +8,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/macula-io/macula-go-sdk/identity"
+	"github.com/macula-io/macula-go/identity"
 )
 
 // DefaultPath returns the identity file macula-cli uses when --identity
@@ -30,7 +30,7 @@ func DefaultPath() (string, error) {
 
 // LoadOrGenerate loads the identity at path, or mints a fresh
 // puzzle-hardened one (identity.Generate — never an unhardened
-// shortcut, see macula-go-sdk's identity package doc on why that fails
+// shortcut, see macula-go's identity package doc on why that fails
 // silently) and persists it if none exists yet. Returns whether a new
 // identity was generated, so callers can tell the user their first
 // run just took a moment for puzzle grinding.

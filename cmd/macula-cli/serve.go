@@ -23,10 +23,21 @@ import (
 // connection.CallHandler's signature is func(cbor.Value) (cbor.Value,
 // error) -- payload only, matching macula_station_link.erl's own
 // handler contract, which this package's ServeOneCall mirrors exactly.
+//
+// Refused is only meaningful with -require-ucan-issuer: ServeOneCallGated
+// returns a nil error both when the handler actually ran AND when a call
+// was refused by policy before the handler ever ran (an ERROR frame is
+// still a successfully-sent reply, from the server's own point of view).
+// Without this field, a policy-refused call would be indistinguishable
+// in this command's own output from one that was genuinely served and
+// replied to -- Payload/Replied below would otherwise show the
+// *configured* -reply value even though an "unauthorized" ERROR frame,
+// not that payload, is what actually went out over the wire.
 type serveResult struct {
 	Procedure  string `json:"procedure"`
-	Payload    any    `json:"payload"`
-	Replied    any    `json:"replied"`
+	Refused    bool   `json:"refused,omitempty"`
+	Payload    any    `json:"payload,omitempty"`
+	Replied    any    `json:"replied,omitempty"`
 	DurationMs int64  `json:"duration_ms"`
 }
 
@@ -139,11 +150,13 @@ func runServe(args []string) int {
 	defer func() { _ = session.Unadvertise(frame.NewUnadvertiseSpec(realm, procedure, id.NodeID()), id) }()
 
 	var received cbor.Value
+	handlerRan := false
 	lookup := func(gotRealm []byte, gotProcedure string) (connection.CallHandler, bool) {
 		if gotProcedure != procedure {
 			return nil, false
 		}
 		return func(payload cbor.Value) (cbor.Value, error) {
+			handlerRan = true
 			received = payload
 			if *echo {
 				return payload, nil
@@ -164,6 +177,21 @@ func runServe(args []string) int {
 		return report.Fail(*jsonOut, serveErr, nil)
 	}
 	duration := time.Since(start).Milliseconds()
+
+	if !handlerRan {
+		// A refusal is still a "successfully sent a reply" outcome from
+		// ServeOneCallGated's own point of view (an ERROR frame went out
+		// over the wire), so this is report.Ok, not report.Fail -- but
+		// Payload/Replied would be actively misleading here (they'd show
+		// the *configured* -reply value, not the "unauthorized" ERROR
+		// that's what the caller actually received), so this branch
+		// deliberately omits them rather than reuse the served shape.
+		result := serveResult{Procedure: procedure, Refused: true, DurationMs: duration}
+		report.Ok(*jsonOut, result, func() {
+			fmt.Printf("%s refused (%d ms) -- caller did not present a valid UCAN token from the required issuer\n", procedure, duration)
+		})
+		return 0
+	}
 
 	replied := replyValue
 	if *echo {

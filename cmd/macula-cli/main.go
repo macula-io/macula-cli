@@ -87,6 +87,7 @@ Usage:
   macula-cli dht find-records <host[:port]> <key-hex>  fetch every record at a storage key
   macula-cli dht find-records-by-type <host[:port]> <type>  list every record of a type (discovery)
   macula-cli identity                                  print the local identity's node ID
+  macula-cli identity sign --procedure <name>          sign a {node_id, timestamp, procedure} ownership proof
   macula-cli ucan mint <issuer> <audience>             mint a UCAN token, signed by the local identity
   macula-cli ucan inspect <token-file>                 decode a UCAN token's claims (no signature check)
   macula-cli daemon start <host[:port]>                hold one Session open, serve registered procedures

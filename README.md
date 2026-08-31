@@ -132,10 +132,17 @@ advertises each of its procedures under two different names (`X.Y` and
 `_/X.Y`) — a pre-existing inconsistency in that service's own advertise
 code, unrelated to this addition and not fixed here. CI checks
 `gofmt`/`vet`/`build` plus a GoReleaser snapshot build, `shellcheck` on the
-install/uninstall scripts, and a PowerShell parse-check — no unit tests,
-since every command talks to a live station by design; verification is
-"run it against the fleet," same convention `macula-go`'s own
-`live`-tagged tests follow.
+install/uninstall scripts, and a PowerShell parse-check. Almost no unit
+tests, since every command talks to a live station by design and
+verification is "run it against the fleet," same convention `macula-go`'s
+own `live`-tagged tests follow -- the one deliberate exception is
+`internal/daemon/pubsub_test.go`, added alongside the `watchForDisconnect`
+fix below: that bug lived entirely in the LOCAL control-socket protocol,
+never touched the mesh at all, and is exactly the kind of thing "run it
+against the fleet" would never have caught (it didn't, for as long as
+daemon mode existed) since it depends on exact byte-level timing a fleet
+run can't deterministically reproduce -- a `net.Pipe()`-backed unit test
+can, and does, every time.
 
 `macula-go` is now tagged too (`v0.3.0`, current as of the rename below) —
 this repo pins an exact tag in `go.mod` rather than a floating pseudo-version,
@@ -275,6 +282,26 @@ of this hit exactly that race live: answering inbound calls while also
 making an outbound one intermittently stole the reply meant for the
 outbound caller. Splitting by concern removes the race instead of hoping
 timing stays lucky.
+
+**A `pubsub watch -daemon` tap silently died within microseconds for a
+long topic name, fixed 2026-08-31.** The disconnect-detector that lets
+`handleWatch` notice a tap process going away read one raw byte off the
+control-socket connection and treated ANY byte as "gone" -- but
+`json.Encoder.Encode` (every client request's own writer) always
+appends one trailing `\n`, which `Decode()` does not itself consume.
+For a short request that trailing byte was reliably swallowed by the
+SAME read that decoded the request body, so nothing was ever left to
+find; cross whatever internal chunk-size boundary the request happens
+to land on (reproduced live with a 74-byte pubsub topic -- 73 worked,
+74 didn't, deterministically) and that newline is still genuinely
+unread when the detector starts, closing the tap before any real event
+could ever arrive -- with no error, just silence. Fixed by having the
+detector tolerate exactly that one expected leftover byte instead of
+treating any byte as a disconnect signal; see
+`internal/daemon/pubsub.go`'s `watchForDisconnect` for the full
+mechanism and receipts, and its own test file for the regression
+coverage. If you're on a version older than this fix and a daemon-tap
+watch on a long topic name never receives anything, this is why.
 
 More than one daemon instance can run side by side via `-socket-name`
 (e.g. one per identity/realm) — every daemon-aware command takes it, and

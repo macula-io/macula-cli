@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"bufio"
 	"context"
 	"encoding/hex"
 	"encoding/json"
@@ -208,12 +209,19 @@ func (srv *Server) subscriptionTopics() []string {
 }
 
 // handleWatch answers one MethodPubsubWatch request and then owns the
-// rest of conn's life: one ack Response, then a MethodPubsubEvent
-// Notification per delivered event until conn disconnects or the
-// subscription ends. Unlike every other method, this does NOT return
-// to handleConn's read-request loop -- there is nothing more this
-// connection is expected to send.
-func (srv *Server) handleWatch(conn net.Conn, enc *json.Encoder, req Request) {
+// rest of the connection's life: one ack Response, then a
+// MethodPubsubEvent Notification per delivered event until the client
+// disconnects or the subscription ends. Unlike every other method,
+// this does NOT return to handleConn's read-request loop -- there is
+// nothing more this connection is expected to send.
+//
+// br is handleConn's own bufio.Reader (the SAME one its json.Decoder
+// reads from), not the raw net.Conn -- see handleConn's own comment
+// on why: any byte the decoder buffered internally but didn't consume
+// (e.g. the client's trailing '\n' after its request) must be drained
+// from that SAME buffer, not raced against via a second, independent
+// read on the underlying connection.
+func (srv *Server) handleWatch(br *bufio.Reader, enc *json.Encoder, req Request) {
 	var p PubsubWatchParams
 	if err := json.Unmarshal(req.Params, &p); err != nil {
 		_ = enc.Encode(Response{ID: req.ID, Error: &RPCError{Message: fmt.Sprintf("decode params: %v", err)}})
@@ -242,16 +250,10 @@ func (srv *Server) handleWatch(conn net.Conn, enc *json.Encoder, req Request) {
 		return
 	}
 
-	// Nothing more is expected FROM this connection -- this goroutine's
-	// only job is noticing the client went away (read returns
-	// EOF/error) so the pump loop below doesn't write into a dead
-	// connection forever.
-	disconnected := make(chan struct{})
-	go func() {
-		defer close(disconnected)
-		buf := make([]byte, 1)
-		_, _ = conn.Read(buf)
-	}()
+	// Nothing more is expected FROM this connection -- watchForDisconnect's
+	// only job is noticing the client went away so the pump loop below
+	// doesn't write into a dead connection forever.
+	disconnected := watchForDisconnect(br)
 
 	for {
 		select {
@@ -270,4 +272,44 @@ func (srv *Server) handleWatch(conn net.Conn, enc *json.Encoder, req Request) {
 			return
 		}
 	}
+}
+
+// watchForDisconnect returns a channel that closes once br produces a
+// byte that ISN'T the one specific benign leftover this protocol
+// always risks: json.Encoder.Encode (the client's own request writer)
+// appends exactly one trailing '\n' after every request body, and
+// json.Decoder.Decode stops reading the instant it has a complete
+// value -- it does not consume that newline itself, so it can still
+// be sitting unread in br when this is called. Read it as EOF-of-
+// nothing-else-expected, not as the client sending something new.
+//
+// Found live (2026-08-31): a straight `_, _ = br.Read(buf); close(ch)`
+// treated that leftover newline as "client disconnected" -- correct
+// in effect (it closed the channel) but for the wrong reason and with
+// no way to tell it apart from a REAL early disconnect. Harmless for
+// a short request, where one Read() syscall already swallowed the
+// newline along with the JSON body before Decode() ever returned,
+// leaving nothing left to find here; reliably wrong once the request
+// crossed whatever chunk-size boundary left the newline genuinely
+// still unread on the wire (reproduced with a 74-byte pubsub topic:
+// 73 bytes worked, 74 consistently didn't) -- closing `disconnected`
+// within microseconds of the watch starting, before any real event
+// could ever be dispatched to it.
+func watchForDisconnect(br *bufio.Reader) <-chan struct{} {
+	disconnected := make(chan struct{})
+	go func() {
+		defer close(disconnected)
+		buf := make([]byte, 1)
+		for {
+			n, err := br.Read(buf)
+			if err != nil {
+				return // genuine read error/EOF -- really gone
+			}
+			if n > 0 && buf[0] == '\n' {
+				continue // the expected leftover -- keep waiting for something that actually is one
+			}
+			return // a real, unexpected byte -- treat as gone
+		}
+	}()
+	return disconnected
 }

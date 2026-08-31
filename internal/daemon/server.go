@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"bufio"
 	"context"
 	"encoding/hex"
 	"encoding/json"
@@ -436,7 +437,33 @@ func (srv *Server) acceptLoop(ctx context.Context, ln net.Listener) error {
 
 func (srv *Server) handleConn(conn net.Conn) {
 	defer conn.Close()
-	dec := json.NewDecoder(conn)
+	// json.Decoder buffers ahead from conn internally (encoding/json's
+	// own scanner, not a bufio.Reader, but same effect: a Decode() call
+	// can read more bytes off the wire than the one JSON value it
+	// returns -- e.g. the trailing '\n' every json.Encoder.Encode call
+	// on the CLIENT side appends after its request). handleWatch used
+	// to read directly from conn to detect the client going away, racing
+	// that raw read against whatever the decoder already buffered but
+	// hadn't consumed: for a short request, one Read() syscall grabbed
+	// the JSON body AND its trailing newline together, so nothing was
+	// left for handleWatch's read to find (the intended behaviour --
+	// see its own doc, "nothing more will ever be read from this
+	// connection"). Cross whatever chunk-size boundary the JSON body
+	// happens to land on and the trailing newline is genuinely still
+	// unread on the wire when Decode() returns, and handleWatch's raw
+	// conn.Read(buf) picks it up as if the client had just sent
+	// something -- which, per its own logic, means "gone", so it closed
+	// the watch's own disconnected channel within microseconds of
+	// starting, before any real event could ever arrive. Reproduced
+	// live: a 74-byte pubsub topic name (73 worked, 74 didn't) reliably
+	// tripped this depending on exactly where handleConn's own Decode()
+	// call happened to stop reading. Fix: wrap conn in ONE shared
+	// bufio.Reader, used for BOTH the decoder and handleWatch's own
+	// read, so a leftover buffered byte is drained from the SAME buffer
+	// the decoder left it in -- correctly, not raced against a second,
+	// independent read on the same underlying connection.
+	br := bufio.NewReader(conn)
+	dec := json.NewDecoder(br)
 	enc := json.NewEncoder(conn)
 	for {
 		var req Request
@@ -447,7 +474,7 @@ func (srv *Server) handleConn(conn net.Conn) {
 			// handleWatch owns the rest of this connection's life --
 			// one ack, then a Notification per event. Nothing more
 			// will ever be read from this connection.
-			srv.handleWatch(conn, enc, req)
+			srv.handleWatch(br, enc, req)
 			return
 		}
 		if err := enc.Encode(srv.dispatch(req)); err != nil {

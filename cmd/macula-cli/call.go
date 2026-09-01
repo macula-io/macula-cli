@@ -34,6 +34,7 @@ func runCall(args []string) int {
 	identityPath := fs.String("identity", "", "path to a persisted identity seed (default: config dir)")
 	realmHex := fs.String("realm", "", "32-byte realm as hex (default: all-zero realm)")
 	argsJSON := fs.String("args", "null", "call payload as a JSON document")
+	argsFile := fs.String("args-file", "", "path to a JSON file with the call payload -- for payloads too large for -args' inline string (e.g. hecate-rag.upload_knowledge's raw document bytes); mutually exclusive with a non-default -args")
 	timeout := fs.Duration("timeout", 15*time.Second, "connect + call timeout")
 	direct := fs.Bool("direct", false, "resolve the procedure's DHT direct-dial advertisement and call its server directly, instead of routing the call through <host>'s own advertise-gossip routes")
 	realmCA := fs.String("realm-ca", "", "PEM file: realm CA to verify against for cert-chain-authorized direct-dial (requires -direct and -org)")
@@ -57,6 +58,8 @@ func runCall(args []string) int {
 			"B managed-realm authorization) -- pair with \"serve -direct -cert-chain\".\n\n"+
 			"With -ucan, attaches the token at that path to a PLAIN (non-direct) call, for\n"+
 			"reaching a procedure served via \"serve -require-ucan-issuer\".\n\n"+
+			"With -args-file, reads the call payload from a file instead of -args -- for a\n"+
+			"payload too large to pass inline as a command-line argument.\n\n"+
 			"With -via-daemon, routes the call through an already-running\n"+
 			"\"macula-cli daemon start\" instead of dialing the mesh itself, and takes no\n"+
 			"<host[:port]> (the daemon already has one) -- not composable with -direct,\n"+
@@ -78,6 +81,10 @@ func runCall(args []string) int {
 	if *viaDaemon && *direct {
 		return report.Fail(*jsonOut, fmt.Errorf("-via-daemon cannot be combined with -direct: the daemon's Session is bound to one already-connected station, direct-dial resolves and dials a different one per call"), nil)
 	}
+	resolvedArgsJSON, err := resolveArgsJSON(*argsJSON, *argsFile)
+	if err != nil {
+		return report.Fail(*jsonOut, err, nil)
+	}
 
 	if *viaDaemon {
 		if fs.NArg() != 1 {
@@ -90,7 +97,7 @@ func runCall(args []string) int {
 			socketName: *socketName,
 			socketPath: *socketPath,
 			realmHex:   *realmHex,
-			argsJSON:   *argsJSON,
+			argsJSON:   resolvedArgsJSON,
 			timeout:    *timeout,
 			ucanFile:   *ucanFile,
 		})
@@ -110,7 +117,7 @@ func runCall(args []string) int {
 	if err != nil {
 		return report.Fail(*jsonOut, err, nil)
 	}
-	payload, err := wirevalue.FromJSON([]byte(*argsJSON))
+	payload, err := wirevalue.FromJSON([]byte(resolvedArgsJSON))
 	if err != nil {
 		return report.Fail(*jsonOut, err, nil)
 	}
@@ -188,6 +195,26 @@ func runCall(args []string) int {
 		fmt.Printf("  %v\n", result.Payload)
 	})
 	return 0
+}
+
+// resolveArgsJSON returns the call payload as a JSON string, from either
+// -args (inline, the common case) or -args-file (a path, for a payload
+// too large to pass inline -- e.g. hecate-rag.upload_knowledge's raw
+// document bytes). The two are mutually exclusive: passing -args-file
+// alongside a non-default -args is a usage error, not a silent
+// last-one-wins.
+func resolveArgsJSON(argsJSON, argsFile string) (string, error) {
+	if argsFile == "" {
+		return argsJSON, nil
+	}
+	if argsJSON != "null" {
+		return "", fmt.Errorf("-args-file cannot be combined with -args")
+	}
+	data, err := os.ReadFile(argsFile)
+	if err != nil {
+		return "", fmt.Errorf("read %s: %w", argsFile, err)
+	}
+	return string(data), nil
 }
 
 // callViaDaemonArgs carries -via-daemon mode's already-parsed flags

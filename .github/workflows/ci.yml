@@ -35,13 +35,25 @@ jobs:
         with:
           go-version-file: go.mod
       - run: go build ./...
-      # No unit tests: every command in this repo talks to a live
-      # macula-station by design (it's a diagnostic tool for the real
-      # mesh, not a library), so there's nothing meaningful to unit
-      # test in isolation. Live/manual verification is documented in
-      # the README's "Build & test" section — same convention
-      # macula-go-sdk uses for its own `live`-tagged tests, just with
-      # no offline half to run in CI at all.
+
+  test:
+    name: go test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      # Almost every command in this repo talks to a live macula-station by
+      # design (it's a diagnostic tool for the real mesh, not a library), so
+      # most verification stays "run it against the fleet" -- but three
+      # offline test files exist for the pieces that don't touch the mesh at
+      # all (cmd/macula-cli's identity/call flag parsing, internal/daemon's
+      # local control-socket protocol), and plain `go test ./...` already
+      # excludes every `//go:build live` file (internal/daemon's own
+      # register_direct_live_test.go, which needs a real station and
+      # MACULA_LIVE_STATION) -- nothing extra to gate here.
+      - run: go test ./...
 
   goreleaser-check:
     name: goreleaser build (snapshot)
@@ -56,7 +68,7 @@ jobs:
       - uses: goreleaser/goreleaser-action@v6
         with:
           distribution: goreleaser
-          version: latest
+          version: "~> v7"
           # Builds every OS/arch combo and packages the archives, same
           # as a real release, without publishing anything — catches a
           # broken .goreleaser.yml (or a build that only fails cross-

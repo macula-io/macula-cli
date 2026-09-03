@@ -97,10 +97,11 @@ protocol itself uses.
 
 ## Status
 
-**Walking skeleton. Last tagged release is
-[v0.1.2](https://github.com/macula-io/macula-cli/releases/tag/v0.1.2)
-(2026-08-29) — `master` has since moved ahead (UCAN, direct-dial, cert-chain,
-and the whole of daemon mode below) and hasn't been re-tagged yet.**
+**Walking skeleton, now several releases past v0.1.2 — UCAN, direct-dial,
+cert-chain, daemon mode, `dht`, large-payload `-args-file`, `identity sign`,
+and the daemon-registration direct-dial fix have all shipped since. See this
+repo's own [Releases](https://github.com/macula-io/macula-cli/releases) for
+the current tag.**
 All nine commands ran successfully against the real 7-station demo fleet as
 each was built — not batched to the end — including finding and fixing
 several real bugs along the way (`pubsub watch` crashing on a station
@@ -131,18 +132,19 @@ routing-side problem. Also surfaced, incidentally, that `hecate_mail`
 advertises each of its procedures under two different names (`X.Y` and
 `_/X.Y`) — a pre-existing inconsistency in that service's own advertise
 code, unrelated to this addition and not fixed here. CI checks
-`gofmt`/`vet`/`build` plus a GoReleaser snapshot build, `shellcheck` on the
-install/uninstall scripts, and a PowerShell parse-check. Almost no unit
-tests, since every command talks to a live station by design and
-verification is "run it against the fleet," same convention `macula-go`'s
-own `live`-tagged tests follow -- the one deliberate exception is
-`internal/daemon/pubsub_test.go`, added alongside the `watchForDisconnect`
-fix below: that bug lived entirely in the LOCAL control-socket protocol,
-never touched the mesh at all, and is exactly the kind of thing "run it
-against the fleet" would never have caught (it didn't, for as long as
-daemon mode existed) since it depends on exact byte-level timing a fleet
-run can't deterministically reproduce -- a `net.Pipe()`-backed unit test
-can, and does, every time.
+`gofmt`/`vet`/`build`/`go test` plus a GoReleaser snapshot build, `shellcheck`
+on the install/uninstall scripts, and a PowerShell parse-check. Almost every
+command still talks to a live station by design and its own verification
+stays "run it against the fleet," same convention `macula-go`'s own
+`live`-tagged tests follow (this repo's own live test,
+`internal/daemon/register_direct_live_test.go`, needs `-tags live` and a real
+station, so plain `go test ./...` in CI never touches the mesh) -- three
+files are the deliberate exception, for bugs that never touched the mesh at
+all: `internal/daemon/pubsub_test.go`, added alongside the
+`watchForDisconnect` fix below (a `net.Pipe()`-backed test for exact
+byte-level control-socket timing a fleet run can't deterministically
+reproduce), plus `cmd/macula-cli/identity_test.go` and
+`cmd/macula-cli/call_test.go` for flag parsing.
 
 `macula-go` is now tagged too (`v0.3.0`, current as of the rename below) —
 this repo pins an exact tag in `go.mod` rather than a floating pseudo-version,

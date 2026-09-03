@@ -37,7 +37,7 @@ func runCall(args []string) int {
 	direct := fs.Bool("direct", false, "resolve the procedure's DHT direct-dial advertisement and call its server directly, instead of routing the call through <host>'s own advertise-gossip routes")
 	realmCA := fs.String("realm-ca", "", "PEM file: realm CA to verify against for cert-chain-authorized direct-dial (requires -direct and -org)")
 	org := fs.String("org", "", "expected org name for cert-chain-authorized direct-dial (requires -direct and -realm-ca)")
-	ucanFile := fs.String("ucan", "", "path to a UCAN token file to attach to the call -- NOT composable with -direct: macula-go's direct-dial call path does not currently accept a UCAN token")
+	ucanFile := fs.String("ucan", "", "path to a UCAN token file to attach to the call -- composable with -direct, for a UCAN-gated capability reachable only via direct-dial (every hecate-om capability is)")
 	viaDaemon := fs.Bool("via-daemon", false, "route this call through a running \"macula-cli daemon\" instead of dialing the mesh directly -- reuses its already-open Session, takes no <host[:port]>. Not composable with -direct.")
 	socketName := fs.String("socket-name", daemon.DefaultName, "with -via-daemon, the target daemon instance's -socket-name")
 	socketPath := fs.String("socket", "", "with -via-daemon, control socket path (default: derived from -socket-name)")
@@ -56,8 +56,10 @@ func runCall(args []string) int {
 			"With -direct plus -realm-ca and -org, only trusts an advertisement whose\n"+
 			"embedded cert chain validates to -realm-ca and names -org (Slice 7c Direction\n"+
 			"B managed-realm authorization) -- pair with \"serve -direct -cert-chain\".\n\n"+
-			"With -ucan, attaches the token at that path to a PLAIN (non-direct) call, for\n"+
-			"reaching a procedure served via \"serve -require-ucan-issuer\".\n\n"+
+			"With -ucan, attaches the token at that path to the call, plain or -direct, for\n"+
+			"reaching a procedure served via \"serve -require-ucan-issuer\" -- not composable\n"+
+			"with -realm-ca/-org (cert-chain org authorization and UCAN gating are separate\n"+
+			"checks, not yet combined).\n\n"+
 			"With -args-file, reads the call payload from a file instead of -args -- for a\n"+
 			"payload too large to pass inline as a command-line argument.\n\n"+
 			"With -via-daemon, routes the call through an already-running\n"+
@@ -78,8 +80,8 @@ func runCall(args []string) int {
 	if *realmCA != "" && !*direct {
 		return report.Fail(*jsonOut, fmt.Errorf("-realm-ca/-org require -direct (cert-chain authorization is a direct-dial-only feature)"), nil)
 	}
-	if *ucanFile != "" && *direct {
-		return report.Fail(*jsonOut, fmt.Errorf("-ucan cannot be combined with -direct: macula-go's directdial.Call/CallWithCertChain do not accept a UCAN token today -- attach a UCAN only for a plain call"), nil)
+	if *ucanFile != "" && *realmCA != "" {
+		return report.Fail(*jsonOut, fmt.Errorf("-ucan cannot be combined with -realm-ca/-org: cert-chain org authorization and UCAN capability gating are separate checks, not yet composed in this SDK"), nil)
 	}
 	if *viaDaemon && *direct {
 		return report.Fail(*jsonOut, fmt.Errorf("-via-daemon cannot be combined with -direct: the daemon's Session is bound to one already-connected station, direct-dial resolves and dials a different one per call"), nil)
@@ -149,6 +151,12 @@ func runCall(args []string) int {
 		realmCAPEM, err = os.ReadFile(*realmCA)
 		if err == nil {
 			resp, err = directdial.CallWithCertChain(ctx, session, id, realm, procedure, realmCAPEM, *org, payload, *timeout)
+		}
+	case *direct && *ucanFile != "":
+		var ucanToken []byte
+		ucanToken, err = os.ReadFile(*ucanFile)
+		if err == nil {
+			resp, err = directdial.CallWithUCAN(ctx, session, id, realm, procedure, payload, *timeout, ucanToken)
 		}
 	case *direct:
 		resp, err = directdial.Call(ctx, session, id, realm, procedure, payload, *timeout)

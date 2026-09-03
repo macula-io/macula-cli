@@ -68,7 +68,7 @@ jobs:
       - uses: goreleaser/goreleaser-action@v6
         with:
           distribution: goreleaser
-          version: "~> v7"
+          version: "~> v2"
           # Builds every OS/arch combo and packages the archives, same
           # as a real release, without publishing anything — catches a
           # broken .goreleaser.yml (or a build that only fails cross-

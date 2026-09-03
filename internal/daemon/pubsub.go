@@ -11,7 +11,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/macula-io/macula-go/connection"
 	"github.com/macula-io/macula-go/frame"
+	"github.com/macula-io/macula-go/transport"
 
 	"github.com/macula-io/macula-cli/internal/wirevalue"
 )
@@ -59,18 +61,52 @@ func (srv *Server) runSubscriptionLoop(ctx context.Context) {
 			return
 		default:
 		}
-		evt, err := srv.subSession.RecvEvent(subscriptionPollInterval)
+		evt, err := srv.subSession.Load().RecvEvent(subscriptionPollInterval)
 		if err != nil {
 			if isRecvTimeout(err) || errors.Is(err, frame.ErrNotAnEventFrame) {
 				continue
 			}
-			// A real connection failure -- nothing more will ever
-			// arrive on this session. Close every watcher's channel so
-			// a "pubsub watch -daemon" tap stops instead of hanging.
-			srv.closeAllSubscriptions()
-			return
+			// A real connection failure -- redial and replay every
+			// currently-tracked subscription before resuming, mirroring
+			// the reference SDK's respawn_link + subs_to
+			// (macula_client.erl, macula_client_replay.erl). srv.subs is
+			// deliberately NOT cleared here (unlike before reconnect
+			// existed) so there is still something to replay; only a
+			// real shutdown (ctx done, or reconnect giving up because of
+			// one) closes every watcher below.
+			fresh, ok := srv.reconnect(ctx, transport.WebPKI{}, srv.subID)
+			if !ok {
+				srv.closeAllSubscriptions()
+				return
+			}
+			srv.subSession.Store(fresh)
+			srv.setConnectedTo(fresh.RemoteAddr())
+			srv.replaySubscriptions(fresh)
+			continue
 		}
 		srv.dispatchEvent(evt)
+	}
+}
+
+// replaySubscriptions re-sends SUBSCRIBE for every topic this daemon
+// currently tracks onto a freshly (re)connected subscribe session --
+// the pub/sub analogue of replayAdvertisements (server.go), mirroring
+// macula_client_replay:subs_to/2. Best-effort for the same reason: a
+// failed re-subscribe here leaves srv.subs untouched, so it's retried
+// on the next reconnect rather than silently dropped.
+func (srv *Server) replaySubscriptions(sess *connection.Session) {
+	srv.subsMu.Lock()
+	keys := make([]topicKey, 0, len(srv.subs))
+	for k := range srv.subs {
+		keys = append(keys, k)
+	}
+	srv.subsMu.Unlock()
+	for _, k := range keys {
+		realm, err := hex.DecodeString(k.realmHex)
+		if err != nil {
+			continue
+		}
+		_ = sess.Subscribe(frame.NewSubscribeSpec(k.topic, realm, srv.subID.NodeID()), srv.subID)
 	}
 }
 
@@ -133,7 +169,7 @@ func (srv *Server) ensureSubscription(realm []byte, topic string) (*subscription
 		return sub, nil
 	}
 	spec := frame.NewSubscribeSpec(topic, realm, srv.subID.NodeID())
-	if err := srv.subSession.Subscribe(spec, srv.subID); err != nil {
+	if err := srv.subSession.Load().Subscribe(spec, srv.subID); err != nil {
 		return nil, fmt.Errorf("subscribe: %w", err)
 	}
 	sub := &subscription{watchers: map[chan PubsubEventNotification]struct{}{}}
@@ -170,7 +206,7 @@ func (srv *Server) Unsubscribe(p PubsubUnsubscribeParams) (PubsubUnsubscribeResu
 	srv.subsMu.Unlock()
 
 	if existed {
-		_ = srv.subSession.Unsubscribe(frame.NewUnsubscribeSpec(p.Topic, realm, srv.subID.NodeID()), srv.subID)
+		_ = srv.subSession.Load().Unsubscribe(frame.NewUnsubscribeSpec(p.Topic, realm, srv.subID.NodeID()), srv.subID)
 		sub.mu.Lock()
 		for ch := range sub.watchers {
 			close(ch)

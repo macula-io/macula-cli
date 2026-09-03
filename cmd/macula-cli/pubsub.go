@@ -13,9 +13,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/macula-io/macula-go/connection"
 	"github.com/macula-io/macula-go/frame"
-	"github.com/macula-io/macula-go/transport"
 
 	"github.com/macula-io/macula-cli/internal/daemon"
 	"github.com/macula-io/macula-cli/internal/report"
@@ -60,10 +58,14 @@ func runPubsubPublish(args []string) int {
 	realmHex := fs.String("realm", "", "32-byte realm as hex (default: all-zero realm)")
 	payloadJSON := fs.String("payload", "null", "event payload as a JSON document")
 	connectTimeout := fs.Duration("connect-timeout", 15*time.Second, "connect timeout")
+	var seeds seedFlag
+	fs.Var(&seeds, "seed", "additional fallback station host[:port], tried in order after <host> if it doesn't answer; repeat for more than one")
 	fs.Usage = func() {
 		fmt.Fprint(fs.Output(), "Usage: macula-cli pubsub publish [flags] <host[:port]> <topic>\n\n"+
 			"Publishes one event to a topic and exits -- no standing connection, no\n"+
-			"subscriber confirmation (PUBLISH has no ack on this wire protocol).\n\nFlags:\n")
+			"subscriber confirmation (PUBLISH has no ack on this wire protocol).\n\n"+
+			"With -seed, falls back to additional stations in order if <host> doesn't\n"+
+			"answer.\n\nFlags:\n")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
@@ -74,7 +76,7 @@ func runPubsubPublish(args []string) int {
 		return 2
 	}
 
-	host, port, err := parseHostPort(fs.Arg(0))
+	resolvedSeeds, err := resolveSeeds(fs.Arg(0), seeds)
 	if err != nil {
 		return report.Fail(*jsonOut, err, nil)
 	}
@@ -100,7 +102,7 @@ func runPubsubPublish(args []string) int {
 	start := time.Now()
 	ctx, cancel := context.WithTimeout(context.Background(), *connectTimeout)
 	defer cancel()
-	session, err := connection.Connect(ctx, host, port, transport.WebPKI{}, id)
+	session, err := dialSeeds(ctx, resolvedSeeds, id)
 	if err != nil {
 		return report.Fail(*jsonOut, err, nil)
 	}
@@ -143,6 +145,8 @@ func runPubsubWatch(args []string) int {
 	viaDaemon := fs.Bool("daemon", false, "tap into a running \"macula-cli daemon\"'s subscription instead of subscribing here -- persists past this command's own exit, takes no <host[:port]>")
 	socketName := fs.String("socket-name", daemon.DefaultName, "with -daemon, the target daemon instance's -socket-name")
 	socketPath := fs.String("socket", "", "with -daemon, control socket path (default: derived from -socket-name)")
+	var seeds seedFlag
+	fs.Var(&seeds, "seed", "additional fallback station host[:port], tried in order after <host> if it doesn't answer; repeat for more than one")
 	fs.Usage = func() {
 		fmt.Fprint(fs.Output(), "Usage: macula-cli pubsub watch [flags] <host[:port]> <topic>\n"+
 			"       macula-cli pubsub watch -daemon [flags] <topic>\n\n"+
@@ -153,7 +157,9 @@ func runPubsubWatch(args []string) int {
 			"and keeps running after this command exits; use \"pubsub unsubscribe -daemon\"\n"+
 			"to actually end it. Takes no <host[:port]> (the daemon already has one), and\n"+
 			"-count/-duration/Ctrl-C stop only THIS command's own tap, not the\n"+
-			"subscription.\n\nFlags:\n")
+			"subscription.\n\n"+
+			"With -seed (non-daemon mode only), falls back to additional stations in\n"+
+			"order if <host> doesn't answer.\n\nFlags:\n")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
@@ -180,7 +186,7 @@ func runPubsubWatch(args []string) int {
 		return 2
 	}
 
-	host, port, err := parseHostPort(fs.Arg(0))
+	resolvedSeeds, err := resolveSeeds(fs.Arg(0), seeds)
 	if err != nil {
 		return report.Fail(*jsonOut, err, nil)
 	}
@@ -201,7 +207,7 @@ func runPubsubWatch(args []string) int {
 
 	connectCtx, connectCancel := context.WithTimeout(context.Background(), *connectTimeout)
 	defer connectCancel()
-	session, err := connection.Connect(connectCtx, host, port, transport.WebPKI{}, id)
+	session, err := dialSeeds(connectCtx, resolvedSeeds, id)
 	if err != nil {
 		return report.Fail(*jsonOut, err, nil)
 	}
@@ -214,7 +220,7 @@ func runPubsubWatch(args []string) int {
 	defer session.Unsubscribe(frame.NewUnsubscribeSpec(topic, realm, id.NodeID()), id)
 
 	if !*jsonOut {
-		fmt.Fprintf(os.Stderr, "watching %q on %s:%d (Ctrl-C to stop)\n", topic, host, port)
+		fmt.Fprintf(os.Stderr, "watching %q on %s (Ctrl-C to stop)\n", topic, session.RemoteAddr())
 	}
 
 	sigCh := make(chan os.Signal, 1)

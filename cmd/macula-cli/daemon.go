@@ -48,6 +48,8 @@ func runDaemonStart(args []string) int {
 	socketName := fs.String("socket-name", daemon.DefaultName, "name this daemon instance under (lets more than one run side by side)")
 	socketPath := fs.String("socket", "", "control socket path (default: derived from -socket-name)")
 	connectTimeout := fs.Duration("connect-timeout", 15*time.Second, "connect timeout")
+	var seeds seedFlag
+	fs.Var(&seeds, "seed", "additional fallback station host[:port]; repeat for more than one. The daemon dials these (after <host>) both at startup and whenever its current station goes down, so pass at least 2 for real resilience.")
 	fs.Usage = func() {
 		fmt.Fprint(fs.Output(), "Usage: macula-cli daemon start [flags] <host[:port]>\n\n"+
 			"Connects once and holds the Session open, serving mesh CALLs against\n"+
@@ -55,7 +57,11 @@ func runDaemonStart(args []string) int {
 			"Ctrl-C, or SIGTERM). Other macula-cli invocations control this daemon\n"+
 			"over a local control socket instead of dialing the mesh themselves.\n"+
 			"Runs in the foreground -- pair with a process supervisor (systemd,\n"+
-			"a Windows Service wrapper) for unattended use.\n\nFlags:\n")
+			"a Windows Service wrapper) for unattended use.\n\n"+
+			"With -seed, the daemon redials the next healthy seed and re-registers\n"+
+			"everything it was serving/subscribed to if its current station goes\n"+
+			"down -- without at least one -seed, a station restart takes this\n"+
+			"daemon off the mesh until it's restarted by hand.\n\nFlags:\n")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
@@ -66,7 +72,7 @@ func runDaemonStart(args []string) int {
 		return 2
 	}
 
-	host, port, err := parseHostPort(fs.Arg(0))
+	resolvedSeeds, err := resolveSeeds(fs.Arg(0), seeds)
 	if err != nil {
 		return report.Fail(*jsonOut, err, nil)
 	}
@@ -85,13 +91,13 @@ func runDaemonStart(args []string) int {
 
 	connectCtx, connectCancel := context.WithTimeout(context.Background(), *connectTimeout)
 	defer connectCancel()
-	srv, err := daemon.NewServer(connectCtx, host, port, id)
+	srv, err := daemon.NewServer(connectCtx, resolvedSeeds, id)
 	if err != nil {
 		return report.Fail(*jsonOut, err, nil)
 	}
 	defer srv.Close()
 
-	connectedTo := fmt.Sprintf("%s:%d", host, port)
+	connectedTo := srv.Status().ConnectedTo
 
 	if !*jsonOut {
 		fmt.Printf("daemon started: identity=%s connected_to=%s socket=%s\n", hexNodeID(id), connectedTo, sockPath)

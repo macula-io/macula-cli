@@ -13,7 +13,6 @@ import (
 	"github.com/macula-io/macula-go/connection"
 	"github.com/macula-io/macula-go/directdial"
 	"github.com/macula-io/macula-go/frame"
-	"github.com/macula-io/macula-go/transport"
 	"github.com/macula-io/macula-go/ucan"
 
 	"github.com/macula-io/macula-cli/internal/daemon"
@@ -68,6 +67,8 @@ func runServe(args []string) int {
 	stopServing := fs.Bool("stop", false, "with -daemon, unregister <procedure> instead of registering it")
 	socketName := fs.String("socket-name", daemon.DefaultName, "with -daemon, the target daemon instance's -socket-name")
 	socketPath := fs.String("socket", "", "with -daemon, control socket path (default: derived from -socket-name)")
+	var seeds seedFlag
+	fs.Var(&seeds, "seed", "additional fallback station host[:port], tried in order after <host> if it doesn't answer; repeat for more than one")
 	fs.Usage = func() {
 		fmt.Fprint(fs.Output(), "Usage: macula-cli serve [flags] <host[:port]> <procedure>\n"+
 			"       macula-cli serve -daemon [flags] <procedure>\n\n"+
@@ -96,7 +97,9 @@ func runServe(args []string) int {
 			"\"macula-cli daemon start\" instead of dialing the mesh itself, answers\n"+
 			"however many calls arrive until -stop unregisters it or the daemon\n"+
 			"stops, and takes no <host[:port]> (the daemon already has one). All the\n"+
-			"advertise/UCAN flags above still apply.\n\nFlags:\n")
+			"advertise/UCAN flags above still apply.\n\n"+
+			"With -seed, falls back to additional stations in order if <host> doesn't\n"+
+			"answer.\n\nFlags:\n")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
@@ -144,7 +147,7 @@ func runServe(args []string) int {
 		return 2
 	}
 
-	host, port, err := parseHostPort(fs.Arg(0))
+	resolvedSeeds, err := resolveSeeds(fs.Arg(0), seeds)
 	if err != nil {
 		return report.Fail(*jsonOut, err, nil)
 	}
@@ -169,7 +172,7 @@ func runServe(args []string) int {
 
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 	defer cancel()
-	session, err := connection.Connect(ctx, host, port, transport.WebPKI{}, id)
+	session, err := dialSeeds(ctx, resolvedSeeds, id)
 	if err != nil {
 		return report.Fail(*jsonOut, err, nil)
 	}

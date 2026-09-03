@@ -1,12 +1,15 @@
 package main
 
 import (
+	"context"
 	"encoding/hex"
 	"fmt"
 	"net"
 	"strconv"
 
+	"github.com/macula-io/macula-go/connection"
 	"github.com/macula-io/macula-go/identity"
+	"github.com/macula-io/macula-go/transport"
 
 	"github.com/macula-io/macula-cli/internal/identitystore"
 )
@@ -30,6 +33,48 @@ func parseHostPort(s string) (string, uint16, error) {
 		return "", 0, fmt.Errorf("invalid port %q: %w", portStr, err)
 	}
 	return host, uint16(port), nil
+}
+
+// seedFlag accumulates repeated -seed host[:port] fallback stations
+// into a []connection.Seed, parsed via parseHostPort so a malformed
+// -seed value fails at flag-parse time rather than at dial time --
+// the same flag.Value pattern ucan.go's capabilityFlag already
+// established for this codebase's other repeatable flag.
+type seedFlag []connection.Seed
+
+func (s *seedFlag) String() string {
+	return fmt.Sprintf("%v", []connection.Seed(*s))
+}
+
+func (s *seedFlag) Set(v string) error {
+	host, port, err := parseHostPort(v)
+	if err != nil {
+		return fmt.Errorf("-seed %q: %w", v, err)
+	}
+	*s = append(*s, connection.Seed{Host: host, Port: port})
+	return nil
+}
+
+// resolveSeeds builds the ordered candidate list every direct-dial
+// command uses: the positional <host[:port]> first -- so every
+// existing single-host invocation is unaffected -- then any -seed
+// fallbacks in the order given.
+func resolveSeeds(primary string, extra seedFlag) ([]connection.Seed, error) {
+	host, port, err := parseHostPort(primary)
+	if err != nil {
+		return nil, err
+	}
+	seeds := make([]connection.Seed, 0, 1+len(extra))
+	seeds = append(seeds, connection.Seed{Host: host, Port: port})
+	return append(seeds, extra...), nil
+}
+
+// dialSeeds is the shared multi-seed connect every direct-dial command
+// funnels through -- see connection.ConnectSeeds's own doc for the
+// fallback semantics (first seed that answers wins; if all fail, the
+// error names every seed tried instead of going silent).
+func dialSeeds(ctx context.Context, seeds []connection.Seed, id identity.KeyPair) (*connection.Session, error) {
+	return connection.ConnectSeeds(ctx, seeds, transport.WebPKI{}, id)
 }
 
 // parseRealm decodes a hex-encoded realm, or returns the all-zero

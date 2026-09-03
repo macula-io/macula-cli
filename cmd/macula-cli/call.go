@@ -11,10 +11,8 @@ import (
 	"time"
 
 	"github.com/macula-io/macula-go/bolt4"
-	"github.com/macula-io/macula-go/connection"
 	"github.com/macula-io/macula-go/directdial"
 	"github.com/macula-io/macula-go/frame"
-	"github.com/macula-io/macula-go/transport"
 
 	"github.com/macula-io/macula-cli/internal/daemon"
 	"github.com/macula-io/macula-cli/internal/report"
@@ -43,6 +41,8 @@ func runCall(args []string) int {
 	viaDaemon := fs.Bool("via-daemon", false, "route this call through a running \"macula-cli daemon\" instead of dialing the mesh directly -- reuses its already-open Session, takes no <host[:port]>. Not composable with -direct.")
 	socketName := fs.String("socket-name", daemon.DefaultName, "with -via-daemon, the target daemon instance's -socket-name")
 	socketPath := fs.String("socket", "", "with -via-daemon, control socket path (default: derived from -socket-name)")
+	var seeds seedFlag
+	fs.Var(&seeds, "seed", "additional fallback station host[:port], tried in order after <host> if it doesn't answer; repeat for more than one")
 	fs.Usage = func() {
 		fmt.Fprint(fs.Output(), "Usage: macula-cli call [flags] <host[:port]> <procedure>\n"+
 			"       macula-cli call -via-daemon [flags] <procedure>\n\n"+
@@ -63,7 +63,9 @@ func runCall(args []string) int {
 			"With -via-daemon, routes the call through an already-running\n"+
 			"\"macula-cli daemon start\" instead of dialing the mesh itself, and takes no\n"+
 			"<host[:port]> (the daemon already has one) -- not composable with -direct,\n"+
-			"since direct-dial resolves and dials a different station per call.\n\nFlags:\n")
+			"since direct-dial resolves and dials a different station per call.\n\n"+
+			"With -seed, falls back to additional stations in order if <host> doesn't\n"+
+			"answer -- not used with -direct, whose resolved station comes from the DHT.\n\nFlags:\n")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
@@ -107,7 +109,7 @@ func runCall(args []string) int {
 		return 2
 	}
 
-	host, port, err := parseHostPort(fs.Arg(0))
+	resolvedSeeds, err := resolveSeeds(fs.Arg(0), seeds)
 	if err != nil {
 		return report.Fail(*jsonOut, err, nil)
 	}
@@ -132,7 +134,7 @@ func runCall(args []string) int {
 
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 	defer cancel()
-	session, err := connection.Connect(ctx, host, port, transport.WebPKI{}, id)
+	session, err := dialSeeds(ctx, resolvedSeeds, id)
 	if err != nil {
 		return report.Fail(*jsonOut, err, nil)
 	}

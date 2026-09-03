@@ -6,6 +6,8 @@ github.com/klauspost/cpuid/v2 v2.0.9 h1:lgaqFMSdTdQYdZ04uHyN2d/eKdOMyi2YLSvlQIBF
 github.com/klauspost/cpuid/v2 v2.0.9/go.mod h1:FInQzS24/EEf25PyTYn52gqo7WaD8xa0213Md/qVLRg=
 github.com/macula-io/macula-go v0.3.0 h1:Kcu1qEBkB6Cy60grYnuxVvbHvmWgFy92gbeC7xY8Pf4=
 github.com/macula-io/macula-go v0.3.0/go.mod h1:+fNmN2revanBnQadaSie1kG4n8pkvFsQgKUQSqTi2qo=
+github.com/macula-io/macula-go v0.3.2-0.20260903073525-7d16c3ad25f0 h1:2u3JeCAwqdnpekSPDXInl6ZLOKk1OksE7akjNx+/+TI=
+github.com/macula-io/macula-go v0.3.2-0.20260903073525-7d16c3ad25f0/go.mod h1:+fNmN2revanBnQadaSie1kG4n8pkvFsQgKUQSqTi2qo=
 github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZbAQM=
 github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
 github.com/quic-go/go-ossfuzz-seeds v0.1.0 h1:APacT+iIaNF6fd8AGEiN3bT/Jtkd2jz4v4TzM7MFjy0=

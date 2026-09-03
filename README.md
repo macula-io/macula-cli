@@ -223,7 +223,7 @@ internal/daemon/         daemon mode: three long-lived Sessions (serve/call/subs
 | `internal/identitystore` | Loads a persisted identity or mints a fresh puzzle-hardened one (`identity.Generate` — never the unhardened path). |
 | `internal/report` | Shared `--json` / human-text output, surfaces BOLT#4 code/name/retryable for wire-level failures. |
 | `internal/wirevalue` | Converts between JSON (what a human or an agent types/reads) and `cbor.Value` (what the wire actually carries) — deliberately narrow, since Macula's CBOR has no `bool` and no float/int ambiguity the way JSON does. |
-| `internal/daemon` | `Server` holds three Sessions (serve/call/subscribe — see [Daemon mode](#daemon-mode)) plus mutex-guarded procedure and subscription registries, driving `macula-go`'s `ServeForever`; `Do`/`Watch`/`Listen`/`SocketPath` are the newline-delimited-JSON control-socket client and server halves `cmd/macula-cli`'s daemon-aware commands share. |
+| `internal/daemon` | `Server` holds three Sessions (serve/call/subscribe — see [Daemon mode](#daemon-mode)) plus mutex-guarded procedure and subscription registries, driving `macula-go`'s `ServeForever`; each Session independently redials the seed pool and replays its own state (advertisements, subscriptions) if its connection dies — see [Resilience](#daemon-mode). `Do`/`Watch`/`Listen`/`SocketPath` are the newline-delimited-JSON control-socket client and server halves `cmd/macula-cli`'s daemon-aware commands share. |
 
 ---
 
@@ -243,7 +243,12 @@ the same shape as `ssh-agent` or `dockerd`, not a second product.
 ```bash
 # Start the daemon (foreground -- pair with a process supervisor for
 # unattended use; Ctrl-C/SIGTERM/"daemon stop" all stop it cleanly).
-macula-cli daemon start station-de-frankfurt.macula.io:4433 &
+# -seed adds fallback stations the daemon redials (and re-registers
+# everything against) if its current one goes down -- see "Resilience:
+# multi-seed dial and reconnect" below.
+macula-cli daemon start -seed station-de-nuremberg.macula.io:4433 \
+  -seed station-de-falkenstein.macula.io:4433 \
+  station-de-frankfurt.macula.io:4433 &
 
 # Register a procedure -- answers as many calls as arrive, not just one.
 macula-cli serve -daemon -reply '{"pong":1}' my.echo
@@ -284,6 +289,28 @@ of this hit exactly that race live: answering inbound calls while also
 making an outbound one intermittently stole the reply meant for the
 outbound caller. Splitting by concern removes the race instead of hoping
 timing stays lucky.
+
+**Resilience: multi-seed dial and reconnect.** `call`, `pubsub publish`,
+`pubsub watch`, `dht find-*`, `serve`, and `daemon start` all accept a
+repeatable `-seed host[:port]` flag: additional stations tried, in order,
+after the main `<host[:port]>` if it doesn't answer. For a one-shot command
+that's the whole story -- first seed that answers wins, matching
+`macula-go`'s own `connection.ConnectSeeds`. For `daemon start`, it's more:
+if any of the daemon's three Sessions loses its connection later -- the
+station restarted, a network blip, anything -- that Session redials the
+seed pool (rotating whichever seed just failed toward the back) and
+replays whatever state it owns onto the fresh connection: every registered
+procedure re-`ADVERTISE`d, every subscribed topic re-`SUBSCRIBE`d. A
+served procedure or an active subscription survives a station bounce
+without anything re-running `serve`/`pubsub subscribe` by hand. This is
+the same respawn-and-replay shape the reference Erlang SDK's own client
+pool (`macula_client.erl`) has always had; without at least one `-seed`,
+a `daemon start` with just one station is exactly as fragile as it was
+before this existed. Pass real, DNS-resolvable fallbacks -- a seed that
+doesn't exist fails the same way a seed that's merely down does, so
+verify each one resolves before relying on it. Three total (the main
+host plus two `-seed`s) is a reasonable floor for a daemon that matters
+staying reachable.
 
 **A `pubsub watch -daemon` tap silently died within microseconds for a
 long topic name, fixed 2026-08-31.** The disconnect-detector that lets

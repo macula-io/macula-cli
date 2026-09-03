@@ -11,7 +11,6 @@ import (
 
 	"github.com/macula-io/macula-go/connection"
 	"github.com/macula-io/macula-go/dht"
-	"github.com/macula-io/macula-go/transport"
 
 	"github.com/macula-io/macula-cli/internal/report"
 	"github.com/macula-io/macula-cli/internal/wirevalue"
@@ -194,8 +193,8 @@ func printRecordHuman(rec dhtRecordJSON) {
 	}
 }
 
-func connectForDht(ctx context.Context, hostPort string, identityPath string, connectTimeout time.Duration) (*connection.Session, error) {
-	host, port, err := parseHostPort(hostPort)
+func connectForDht(ctx context.Context, hostPort string, extraSeeds seedFlag, identityPath string, connectTimeout time.Duration) (*connection.Session, error) {
+	seeds, err := resolveSeeds(hostPort, extraSeeds)
 	if err != nil {
 		return nil, err
 	}
@@ -208,7 +207,7 @@ func connectForDht(ctx context.Context, hostPort string, identityPath string, co
 	}
 	cctx, cancel := context.WithTimeout(ctx, connectTimeout)
 	defer cancel()
-	return connection.Connect(cctx, host, port, transport.WebPKI{}, id)
+	return dialSeeds(cctx, seeds, id)
 }
 
 type dhtFindRecordResult struct {
@@ -222,6 +221,8 @@ func runDhtFindRecord(args []string) int {
 	jsonOut := fs.Bool("json", false, "emit a JSON result envelope instead of human-readable text")
 	identityPath := fs.String("identity", "", "path to a persisted identity seed (default: config dir)")
 	connectTimeout := fs.Duration("connect-timeout", 15*time.Second, "connect timeout")
+	var seeds seedFlag
+	fs.Var(&seeds, "seed", "additional fallback station host[:port], tried in order after <host> if it doesn't answer; repeat for more than one")
 	fs.Usage = func() {
 		fmt.Fprint(fs.Output(), "Usage: macula-cli dht find-record [flags] <host[:port]> <key-hex>\n\n"+
 			"Fetches one DHT record by its 32-byte storage key (64 hex chars) -- e.g.\n"+
@@ -242,7 +243,7 @@ func runDhtFindRecord(args []string) int {
 	}
 
 	ctx := context.Background()
-	session, err := connectForDht(ctx, fs.Arg(0), *identityPath, *connectTimeout)
+	session, err := connectForDht(ctx, fs.Arg(0), seeds, *identityPath, *connectTimeout)
 	if err != nil {
 		return report.Fail(*jsonOut, err, nil)
 	}
@@ -276,6 +277,8 @@ func runDhtFindRecords(args []string) int {
 	jsonOut := fs.Bool("json", false, "emit a JSON result envelope instead of human-readable text")
 	identityPath := fs.String("identity", "", "path to a persisted identity seed (default: config dir)")
 	connectTimeout := fs.Duration("connect-timeout", 15*time.Second, "connect timeout")
+	var seeds seedFlag
+	fs.Var(&seeds, "seed", "additional fallback station host[:port], tried in order after <host> if it doesn't answer; repeat for more than one")
 	fs.Usage = func() {
 		fmt.Fprint(fs.Output(), "Usage: macula-cli dht find-records [flags] <host[:port]> <key-hex>\n\n"+
 			"Fetches EVERY record stored at key -- the full signer-deduped multiset\n"+
@@ -296,7 +299,7 @@ func runDhtFindRecords(args []string) int {
 	}
 
 	ctx := context.Background()
-	session, err := connectForDht(ctx, fs.Arg(0), *identityPath, *connectTimeout)
+	session, err := connectForDht(ctx, fs.Arg(0), seeds, *identityPath, *connectTimeout)
 	if err != nil {
 		return report.Fail(*jsonOut, err, nil)
 	}
@@ -337,6 +340,8 @@ func runDhtFindRecordsByType(args []string) int {
 	jsonOut := fs.Bool("json", false, "emit a JSON result envelope instead of human-readable text")
 	identityPath := fs.String("identity", "", "path to a persisted identity seed (default: config dir)")
 	connectTimeout := fs.Duration("connect-timeout", 15*time.Second, "connect timeout")
+	var seeds seedFlag
+	fs.Var(&seeds, "seed", "additional fallback station host[:port], tried in order after <host> if it doesn't answer; repeat for more than one")
 	fs.Usage = func() {
 		fmt.Fprint(fs.Output(), "Usage: macula-cli dht find-records-by-type [flags] <host[:port]> <type>\n\n"+
 			"Lists every record of one type currently visible from the station this\n"+
@@ -362,7 +367,7 @@ func runDhtFindRecordsByType(args []string) int {
 	}
 
 	ctx := context.Background()
-	session, err := connectForDht(ctx, fs.Arg(0), *identityPath, *connectTimeout)
+	session, err := connectForDht(ctx, fs.Arg(0), seeds, *identityPath, *connectTimeout)
 	if err != nil {
 		return report.Fail(*jsonOut, err, nil)
 	}

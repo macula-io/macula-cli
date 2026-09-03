@@ -15,7 +15,7 @@ import (
 	"github.com/macula-io/macula-go/bolt4"
 	"github.com/macula-io/macula-go/cbor"
 	"github.com/macula-io/macula-go/connection"
-	"github.com/macula-io/macula-go/directdial"
+	"github.com/macula-io/macula-go/dht"
 	"github.com/macula-io/macula-go/frame"
 	"github.com/macula-io/macula-go/identity"
 	"github.com/macula-io/macula-go/transport"
@@ -211,18 +211,12 @@ func (srv *Server) Register(p ServeRegisterParams) (ServeRegisterResult, error) 
 		policy = ucan.Required(issuer)
 	}
 
-	switch {
-	case p.Direct && p.CertChainPEM != "":
-		if err := directdial.AdvertiseDirectWithCertChain(srv.serveSession, srv.id, realm, p.Procedure, ttl, []byte(p.CertChainPEM)); err != nil {
-			return ServeRegisterResult{}, fmt.Errorf("advertise (direct, cert-chain): %w", err)
-		}
-	case p.Direct:
-		if err := directdial.AdvertiseDirect(srv.serveSession, srv.id, realm, p.Procedure, ttl); err != nil {
-			return ServeRegisterResult{}, fmt.Errorf("advertise (direct): %w", err)
-		}
-	default:
-		if err := srv.serveSession.Advertise(frame.NewAdvertiseSpec(realm, p.Procedure, srv.id.NodeID()), srv.id); err != nil {
-			return ServeRegisterResult{}, fmt.Errorf("advertise: %w", err)
+	if err := srv.serveSession.Advertise(frame.NewAdvertiseSpec(realm, p.Procedure, srv.id.NodeID()), srv.id); err != nil {
+		return ServeRegisterResult{}, fmt.Errorf("advertise: %w", err)
+	}
+	if p.Direct {
+		if err := srv.publishDirectAdvertisement(realm, p.Procedure, ttl, p.CertChainPEM); err != nil {
+			return ServeRegisterResult{}, err
 		}
 	}
 
@@ -236,6 +230,48 @@ func (srv *Server) Register(p ServeRegisterParams) (ServeRegisterResult, error) 
 	srv.mu.Unlock()
 
 	return ServeRegisterResult{Registered: true, Procedure: p.Procedure}, nil
+}
+
+// publishDirectAdvertisement is the daemon's own version of
+// directdial.AdvertiseDirect / AdvertiseDirectWithCertChain, split across
+// two sessions on purpose. Those helpers do the plain Advertise AND the
+// DHT put_record on the ONE session they are handed; on a daemon that
+// session is serveSession, whose receive loop belongs to ServeForever,
+// so the put_record's RESULT frame was consumed there and every
+// `serve -daemon -direct` registration died with "dht: put_record:
+// connection: read stream: deadline exceeded" (seen live 2026-09-03 on
+// every attempt, while the one-shot `serve -direct`, with no
+// ServeForever running, worked) -- exactly the shared-control-stream
+// race the Server doc above explains callSession exists to avoid.
+//
+// So: the plain Advertise has already happened on serveSession (the
+// caller does it first, direct or not -- see AdvertiseDirect's own doc
+// on why both are required), the record names serveSession's station
+// as the server and is signed by srv.id (the identity a caller
+// resolves), and the put_record CALL rides callSession under callMu,
+// signed by callID like every other outbound call this daemon makes.
+// The station verifies the RECORD's signature against the advertiser
+// it names, not against whoever carried it.
+func (srv *Server) publishDirectAdvertisement(realm []byte, procedure string, ttl time.Duration, certChainPEM string) error {
+	uri := dht.DiscoveryURI(realm, procedure)
+	var rec dht.Record
+	var err error
+	if certChainPEM != "" {
+		rec, err = dht.NewProcedureAdvertisementWithCertChain(srv.id.NodeID(), uri, srv.serveSession.Station.NodeID, ttl, []byte(certChainPEM))
+	} else {
+		rec, err = dht.NewProcedureAdvertisement(srv.id.NodeID(), uri, srv.serveSession.Station.NodeID, ttl)
+	}
+	if err != nil {
+		return fmt.Errorf("advertise (direct): %w", err)
+	}
+	rec = dht.Sign(rec, srv.id)
+
+	srv.callMu.Lock()
+	defer srv.callMu.Unlock()
+	if err := dht.PutRecord(srv.callSession, srv.callID, rec); err != nil {
+		return fmt.Errorf("advertise (direct): %w", err)
+	}
+	return nil
 }
 
 // Unregister unadvertises p.Procedure and removes its handler.

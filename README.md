@@ -325,6 +325,18 @@ same ones the one-shot `serve` takes; it just sends them to the daemon
 instead of dialing the mesh itself and takes no `<host[:port]>` (the
 daemon already has one).
 
+`-direct` on a daemon registration publishes the direct-dial DHT record
+over the daemon's **calling** session, not its serving one. Until
+2026-09-03 it used the serving session, whose receive loop belongs to
+`ServeForever`, so the `put_record` reply was consumed there and every
+`serve -daemon -direct` failed with `dht: put_record: connection: read
+stream: deadline exceeded` while the one-shot `serve -direct` worked.
+The record is still signed by, and names, the daemon's serving identity
+and station; only the carrier changed. Pinned by
+`internal/daemon/register_direct_live_test.go` (`go test -tags live -run
+Direct ./internal/daemon`, needs a station, `MACULA_LIVE_STATION`
+overrides the default Frankfurt one).
+
 **`-exec` is the only registration mode that computes anything per
 call** — `-reply`/`-echo` both answer from something already known at
 registration time (a fixed payload, or the caller's own payload bounced

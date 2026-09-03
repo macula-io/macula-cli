@@ -65,7 +65,8 @@ func runCall(args []string) int {
 			"<host[:port]> (the daemon already has one) -- not composable with -direct,\n"+
 			"since direct-dial resolves and dials a different station per call.\n\n"+
 			"With -seed, falls back to additional stations in order if <host> doesn't\n"+
-			"answer -- not used with -direct, whose resolved station comes from the DHT.\n\nFlags:\n")
+			"answer -- with -direct, this only affects the DHT-lookup dial; the actual\n"+
+			"call still goes to whatever station the resolved advertisement names.\n\nFlags:\n")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {

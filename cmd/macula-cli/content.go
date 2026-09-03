@@ -11,10 +11,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/macula-io/macula-go/connection"
 	"github.com/macula-io/macula-go/content"
 	"github.com/macula-io/macula-go/manifest"
-	"github.com/macula-io/macula-go/transport"
 
 	"github.com/macula-io/macula-cli/internal/report"
 )
@@ -56,10 +54,14 @@ func runContentProbe(args []string) int {
 	identityPath := fs.String("identity", "", "path to a persisted identity seed (default: config dir)")
 	size := fs.Int("size", 4096, "bytes of random test content to round-trip")
 	connectTimeout := fs.Duration("connect-timeout", 15*time.Second, "connect timeout")
+	var seeds seedFlag
+	fs.Var(&seeds, "seed", "additional fallback station host[:port], tried in order after <host> if it doesn't answer; repeat for more than one")
 	fs.Usage = func() {
 		fmt.Fprint(fs.Output(), "Usage: macula-cli content probe [flags] <host[:port]>\n\n"+
 			"Puts N random bytes, gets them back, and confirms the bytes and Merkle\n"+
-			"verification both check out.\n\nFlags:\n")
+			"verification both check out.\n\n"+
+			"With -seed, falls back to additional stations in order if <host> doesn't\n"+
+			"answer.\n\nFlags:\n")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
@@ -70,7 +72,7 @@ func runContentProbe(args []string) int {
 		return 2
 	}
 
-	host, port, err := parseHostPort(fs.Arg(0))
+	resolvedSeeds, err := resolveSeeds(fs.Arg(0), seeds)
 	if err != nil {
 		return report.Fail(*jsonOut, err, nil)
 	}
@@ -88,7 +90,7 @@ func runContentProbe(args []string) int {
 
 	ctx, cancel := context.WithTimeout(context.Background(), *connectTimeout)
 	defer cancel()
-	session, err := connection.Connect(ctx, host, port, transport.WebPKI{}, id)
+	session, err := dialSeeds(ctx, resolvedSeeds, id)
 	if err != nil {
 		return report.Fail(*jsonOut, err, nil)
 	}
@@ -111,7 +113,7 @@ func runContentProbe(args []string) int {
 	}
 
 	result := contentProbeResult{
-		Host:         fmt.Sprintf("%s:%d", host, port),
+		Host:         fs.Arg(0),
 		Mcid:         hex.EncodeToString(mcid[:]),
 		SizeBytes:    *size,
 		BytesMatched: bytes.Equal(data, got),
@@ -141,9 +143,13 @@ func runContentPut(args []string) int {
 	jsonOut := fs.Bool("json", false, "emit a JSON result envelope instead of human-readable text")
 	identityPath := fs.String("identity", "", "path to a persisted identity seed (default: config dir)")
 	connectTimeout := fs.Duration("connect-timeout", 15*time.Second, "connect timeout")
+	var seeds seedFlag
+	fs.Var(&seeds, "seed", "additional fallback station host[:port], tried in order after <host> if it doesn't answer; repeat for more than one")
 	fs.Usage = func() {
 		fmt.Fprint(fs.Output(), "Usage: macula-cli content put [flags] <host[:port]> <file>\n\n"+
-			"Uploads a file's contents to the mesh and prints its MCID (68 hex chars).\n\nFlags:\n")
+			"Uploads a file's contents to the mesh and prints its MCID (68 hex chars).\n\n"+
+			"With -seed, falls back to additional stations in order if <host> doesn't\n"+
+			"answer.\n\nFlags:\n")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
@@ -154,7 +160,7 @@ func runContentPut(args []string) int {
 		return 2
 	}
 
-	host, port, err := parseHostPort(fs.Arg(0))
+	resolvedSeeds, err := resolveSeeds(fs.Arg(0), seeds)
 	if err != nil {
 		return report.Fail(*jsonOut, err, nil)
 	}
@@ -175,7 +181,7 @@ func runContentPut(args []string) int {
 	start := time.Now()
 	ctx, cancel := context.WithTimeout(context.Background(), *connectTimeout)
 	defer cancel()
-	session, err := connection.Connect(ctx, host, port, transport.WebPKI{}, id)
+	session, err := dialSeeds(ctx, resolvedSeeds, id)
 	if err != nil {
 		return report.Fail(*jsonOut, err, nil)
 	}
@@ -187,7 +193,7 @@ func runContentPut(args []string) int {
 	}
 
 	result := contentPutResult{
-		Host:       fmt.Sprintf("%s:%d", host, port),
+		Host:       fs.Arg(0),
 		Mcid:       hex.EncodeToString(mcid[:]),
 		SizeBytes:  len(data),
 		DurationMs: time.Since(start).Milliseconds(),
@@ -213,10 +219,14 @@ func runContentGet(args []string) int {
 	identityPath := fs.String("identity", "", "path to a persisted identity seed (default: config dir)")
 	out := fs.String("out", "", "write the retrieved bytes to this file (default: print to stdout in human mode, base64 in --json)")
 	connectTimeout := fs.Duration("connect-timeout", 15*time.Second, "connect timeout")
+	var seeds seedFlag
+	fs.Var(&seeds, "seed", "additional fallback station host[:port], tried in order after <host> if it doesn't answer; repeat for more than one")
 	fs.Usage = func() {
 		fmt.Fprint(fs.Output(), "Usage: macula-cli content get [flags] <host[:port]> <mcid>\n\n"+
 			"Downloads and Merkle-verifies content by its 68-hex-char MCID (content.Get\n"+
-			"errors on verification failure, so a clean exit means it checked out).\n\nFlags:\n")
+			"errors on verification failure, so a clean exit means it checked out).\n\n"+
+			"With -seed, falls back to additional stations in order if <host> doesn't\n"+
+			"answer.\n\nFlags:\n")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
@@ -227,7 +237,7 @@ func runContentGet(args []string) int {
 		return 2
 	}
 
-	host, port, err := parseHostPort(fs.Arg(0))
+	resolvedSeeds, err := resolveSeeds(fs.Arg(0), seeds)
 	if err != nil {
 		return report.Fail(*jsonOut, err, nil)
 	}
@@ -247,7 +257,7 @@ func runContentGet(args []string) int {
 	start := time.Now()
 	ctx, cancel := context.WithTimeout(context.Background(), *connectTimeout)
 	defer cancel()
-	session, err := connection.Connect(ctx, host, port, transport.WebPKI{}, id)
+	session, err := dialSeeds(ctx, resolvedSeeds, id)
 	if err != nil {
 		return report.Fail(*jsonOut, err, nil)
 	}
@@ -265,7 +275,7 @@ func runContentGet(args []string) int {
 	}
 
 	result := contentGetResult{
-		Host:       fmt.Sprintf("%s:%d", host, port),
+		Host:       fs.Arg(0),
 		Mcid:       fs.Arg(1),
 		SizeBytes:  len(data),
 		Out:        *out,

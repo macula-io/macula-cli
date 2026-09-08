@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"os"
 	"sync"
@@ -85,6 +86,29 @@ type Server struct {
 	connectedTo  string // guarded by mu -- see setConnectedTo/Status
 	startedAt    time.Time
 
+	// connected/lastError are Status's own connectivity signal (2026-09-08,
+	// a real live gap: connectedTo above only ever reports the last
+	// address this daemon WAS reachable through, updated only on a
+	// SUCCESSFUL (re)connect -- during an ongoing outage it silently kept
+	// reporting that stale address forever, indistinguishable from
+	// healthy to a supervisor or an operator running "daemon status").
+	// connected tracks the SERVE session specifically -- whether other
+	// mesh peers can reach this daemon at all -- not call/subscribe,
+	// which can drop independently (see setSessionError's own doc).
+	// Guarded by mu, same as connectedTo.
+	connected bool
+	lastError string
+
+	// logger is nil (silent) unless SetLogger was called -- same
+	// optional-setter shape as lazymesh's ringwaiter/roomwaiter
+	// SetLogger, guarded by its own mutex since it's read from every
+	// session's own goroutine. Destination is the caller's choice
+	// (daemon.go wires os.Stderr, not a file -- see its own comment on
+	// why that fits this codebase's foreground-plus-systemd convention
+	// better than inventing a log file/rotation scheme).
+	loggerMu sync.Mutex
+	logger   *log.Logger
+
 	callSession *connection.Session
 	callID      identity.KeyPair
 	callMu      sync.Mutex
@@ -103,6 +127,13 @@ type Server struct {
 	policies map[procKey]ucan.Policy
 	order    []procKey // insertion order, for stable "serving" output
 	cancel   context.CancelFunc
+	// degraded marks a procKey still in handlers/order whose most recent
+	// replayAdvertisements attempt failed -- registered and intended,
+	// but not actually advertised on the mesh right now. Cleared the
+	// next time that procedure's replay succeeds. Guarded by mu, same
+	// as handlers/order (Register/Unregister/replayAdvertisements all
+	// already hold mu when touching those).
+	degraded map[procKey]bool
 
 	// subsMu/subs are separate from mu: subscriptions and served
 	// procedures are independent concerns, and giving them their own
@@ -110,6 +141,9 @@ type Server struct {
 	// hold time.
 	subsMu sync.Mutex
 	subs   map[topicKey]*subscription
+	// subDegraded is degraded's counterpart for subscriptions -- see its
+	// own doc above. Guarded by subsMu, same as subs.
+	subDegraded map[topicKey]bool
 }
 
 // NewServer connects all three of a daemon's Sessions (see Server's
@@ -151,6 +185,7 @@ func NewServer(ctx context.Context, seeds []connection.Seed, id identity.KeyPair
 	srv := &Server{
 		id:          id,
 		connectedTo: serveSession.RemoteAddr(),
+		connected:   true,
 		startedAt:   time.Now(),
 		callSession: callSession,
 		callID:      callID,
@@ -158,7 +193,9 @@ func NewServer(ctx context.Context, seeds []connection.Seed, id identity.KeyPair
 		seeds:       append([]connection.Seed(nil), seeds...), // own copy -- reconnect mutates this, must not alias the caller's slice
 		handlers:    map[procKey]connection.CallHandler{},
 		policies:    map[procKey]ucan.Policy{},
+		degraded:    map[procKey]bool{},
 		subs:        map[topicKey]*subscription{},
+		subDegraded: map[topicKey]bool{},
 	}
 	srv.serveSession.Store(serveSession)
 	srv.subSession.Store(subSession)
@@ -231,6 +268,71 @@ func (srv *Server) setConnectedTo(addr string) {
 	srv.mu.Unlock()
 }
 
+// SetLogger sets where this daemon logs connection loss/recovery and
+// otherwise-silent replay failures -- nil (the default) means silence,
+// same optional-setter shape as lazymesh's ringwaiter/roomwaiter
+// SetLogger. Safe to call at any point after NewServer, before or after
+// Run starts -- every log call below takes loggerMu fresh rather than
+// caching a value from before SetLogger might be called.
+func (srv *Server) SetLogger(l *log.Logger) {
+	srv.loggerMu.Lock()
+	srv.logger = l
+	srv.loggerMu.Unlock()
+}
+
+func (srv *Server) log(format string, args ...any) {
+	srv.loggerMu.Lock()
+	l := srv.logger
+	srv.loggerMu.Unlock()
+	if l != nil {
+		l.Printf(format, args...)
+	}
+}
+
+// setSessionLost marks the SERVE session down (Status().Connected=false)
+// only when session=="serve" -- reachability by other mesh peers is
+// specifically what that field means (see StatusResult's own doc); a
+// call or subscribe session dying is real degradation too, but doesn't
+// change whether this daemon itself is reachable, so it's folded into
+// lastError only, not the boolean. Always logs and always records
+// lastError, regardless of which session, so an operator can see a
+// call/subscribe-only outage even though Connected stays true.
+//
+// Takes reason as a string, not an error: connection.Session.Done()
+// (the call session's own trigger, runCallSessionSupervisor) is a bare
+// channel with no accompanying error value in macula-go's API, unlike
+// ServeForever's own return -- a plain string covers both call sites
+// instead of runCallSessionSupervisor fabricating an error to satisfy a
+// signature that only ever needed to produce a log line.
+func (srv *Server) setSessionLost(session, reason string) {
+	srv.mu.Lock()
+	if session == "serve" {
+		srv.connected = false
+	}
+	srv.lastError = fmt.Sprintf("%s session: %s", session, reason)
+	srv.mu.Unlock()
+	srv.log("daemon: %s session lost, reconnecting: %s", session, reason)
+}
+
+// setSessionRecovered clears the connectivity signal set by
+// setSessionLost for session's own reconnect. Only clears
+// Connected/LastError when THIS session is the one lastError is
+// currently attributed to (prefix match against the "session: " tag
+// setSessionLost writes) -- a call-session recovery must not silently
+// clear a still-live serve-session outage's lastError, and vice versa.
+func (srv *Server) setSessionRecovered(session, addr string) {
+	srv.mu.Lock()
+	tag := session + " session:"
+	if len(srv.lastError) >= len(tag) && srv.lastError[:len(tag)] == tag {
+		srv.lastError = ""
+	}
+	if session == "serve" {
+		srv.connected = true
+	}
+	srv.mu.Unlock()
+	srv.log("daemon: %s session reconnected via %s", session, addr)
+}
+
 // replayAdvertisements re-sends ADVERTISE for every procedure this
 // daemon currently has registered onto a freshly (re)connected serve
 // session -- the direct analogue of the reference SDK's
@@ -247,7 +349,13 @@ func (srv *Server) replayAdvertisements(sess *connection.Session) {
 		if err != nil {
 			continue
 		}
-		_ = sess.Advertise(frame.NewAdvertiseSpec(realm, k.procedure, srv.id.NodeID()), srv.id)
+		advErr := sess.Advertise(frame.NewAdvertiseSpec(realm, k.procedure, srv.id.NodeID()), srv.id)
+		srv.mu.Lock()
+		srv.degraded[k] = advErr != nil
+		srv.mu.Unlock()
+		if advErr != nil {
+			srv.log("daemon: re-advertise %s (realm %s) after reconnect failed, still registered but not reachable until the next successful replay: %v", k.procedure, k.realmHex, advErr)
+		}
 	}
 }
 
@@ -324,6 +432,7 @@ func (srv *Server) Register(p ServeRegisterParams) (ServeRegisterResult, error) 
 	}
 	srv.handlers[key] = handler
 	srv.policies[key] = policy
+	delete(srv.degraded, key) // the Advertise just above already succeeded, or Register would have returned its error instead of reaching here
 	srv.mu.Unlock()
 
 	return ServeRegisterResult{Registered: true, Procedure: p.Procedure}, nil
@@ -386,6 +495,7 @@ func (srv *Server) Unregister(p ServeUnregisterParams) (ServeUnregisterResult, e
 	_, existed := srv.handlers[key]
 	delete(srv.handlers, key)
 	delete(srv.policies, key)
+	delete(srv.degraded, key)
 	if existed {
 		for i, k := range srv.order {
 			if k == key {
@@ -397,7 +507,15 @@ func (srv *Server) Unregister(p ServeUnregisterParams) (ServeUnregisterResult, e
 	srv.mu.Unlock()
 
 	if existed {
-		_ = srv.serveSession.Load().Unadvertise(frame.NewUnadvertiseSpec(realm, p.Procedure, srv.id.NodeID()), srv.id)
+		if err := srv.serveSession.Load().Unadvertise(frame.NewUnadvertiseSpec(realm, p.Procedure, srv.id.NodeID()), srv.id); err != nil {
+			// Not restored to handlers/order/degraded above -- the
+			// operator asked to stop serving this and that local intent
+			// already took effect regardless of whether the mesh-facing
+			// Unadvertise itself landed. Logged so a leftover, still-
+			// live advertisement isn't a silent surprise if it's ever
+			// noticed from the outside (e.g. a stale DHT record).
+			srv.log("daemon: unadvertise %s (realm %s) failed, procedure was still unregistered locally: %v", p.Procedure, hex.EncodeToString(realm), err)
+		}
 	}
 	return ServeUnregisterResult{Unregistered: existed}, nil
 }
@@ -405,17 +523,27 @@ func (srv *Server) Unregister(p ServeUnregisterParams) (ServeUnregisterResult, e
 func (srv *Server) Status() StatusResult {
 	srv.mu.Lock()
 	procs := make([]string, len(srv.order))
+	degradedProcs := make([]string, 0)
 	for i, k := range srv.order {
 		procs[i] = k.procedure
+		if srv.degraded[k] {
+			degradedProcs = append(degradedProcs, k.procedure)
+		}
 	}
 	connectedTo := srv.connectedTo
+	connected := srv.connected
+	lastError := srv.lastError
 	srv.mu.Unlock()
 	return StatusResult{
-		Identity:      hex.EncodeToString(srv.id.NodeID()),
-		ConnectedTo:   connectedTo,
-		UptimeSeconds: int64(time.Since(srv.startedAt).Seconds()),
-		Serving:       procs,
-		Subscribed:    srv.subscriptionTopics(),
+		Identity:           hex.EncodeToString(srv.id.NodeID()),
+		ConnectedTo:        connectedTo,
+		Connected:          connected,
+		LastError:          lastError,
+		UptimeSeconds:      int64(time.Since(srv.startedAt).Seconds()),
+		Serving:            procs,
+		ServingDegraded:    degradedProcs,
+		Subscribed:         srv.subscriptionTopics(),
+		SubscribedDegraded: srv.subscriptionDegradedTopics(),
 	}
 }
 
@@ -519,20 +647,28 @@ func (srv *Server) Shutdown() {
 // station churn never ends this loop on its own.
 func (srv *Server) runServeLoop(ctx context.Context) error {
 	for {
-		// ServeForever's return is ignored here: it's either ctx.Err()
-		// (checked below) or a real link failure -- see its own doc in
-		// macula-go -- and in the failure case there's nothing more
-		// useful to do with the error than what reconnect already does.
-		_ = srv.serveSession.Load().ServeForever(ctx, srv.lookup, srv.policy, srv.id)
+		// ServeForever's return is captured now (2026-09-08 -- see
+		// setSessionLost's own doc on why this matters): it's either
+		// ctx.Err() (checked below, a clean shutdown) or a real link
+		// failure, and the failure case's actual reason is worth
+		// logging even though reconnect() itself needs nothing more
+		// from it than "it returned."
+		serveErr := srv.serveSession.Load().ServeForever(ctx, srv.lookup, srv.policy, srv.id)
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
+		reason := "serve loop ended"
+		if serveErr != nil {
+			reason = serveErr.Error()
+		}
+		srv.setSessionLost("serve", reason)
 		fresh, ok := srv.reconnect(ctx, transport.WebPKI{}, srv.id)
 		if !ok {
 			return ctx.Err()
 		}
 		srv.serveSession.Store(fresh)
 		srv.setConnectedTo(fresh.RemoteAddr())
+		srv.setSessionRecovered("serve", fresh.RemoteAddr())
 		srv.replayAdvertisements(fresh)
 	}
 }
@@ -558,6 +694,7 @@ func (srv *Server) runCallSessionSupervisor(ctx context.Context) {
 			return
 		}
 
+		srv.setSessionLost("call", "connection closed")
 		fresh, ok := srv.reconnect(ctx, transport.WebPKI{}, srv.callID)
 		if !ok {
 			return
@@ -566,6 +703,7 @@ func (srv *Server) runCallSessionSupervisor(ctx context.Context) {
 		srv.callSession = fresh
 		srv.callMu.Unlock()
 		srv.setConnectedTo(fresh.RemoteAddr())
+		srv.setSessionRecovered("call", fresh.RemoteAddr())
 	}
 }
 

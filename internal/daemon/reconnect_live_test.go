@@ -3,9 +3,12 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"log"
+	"strings"
 	"testing"
 	"time"
 
@@ -126,4 +129,87 @@ func TestLiveDaemonReconnectsAndReplaysAdvertisement(t *testing.T) {
 		time.Sleep(500 * time.Millisecond)
 	}
 	t.Fatalf("procedure never became callable again after the forced reconnect: %v", lastErr)
+}
+
+// TestLiveDaemonStatusReflectsConnectionLoss is the peer-review ask this
+// whole feature exists to satisfy: not just "does the underlying
+// reconnect logic run" (the test above already proved that), but "does
+// Status() -- what an operator or a supervisor actually SEES -- reflect
+// reality during the outage, not just after it's over." Kills the serve
+// session the exact same way TestLiveDaemonReconnectsAndReplaysAdvertisement
+// does (Close(), indistinguishable from a real station-side drop), then
+// asserts Connected/LastError go bad WHILE the daemon is mid-reconnect
+// (not just eventually recovering), a real log line was produced for
+// the loss, and both clear again once reconnected. `go test -tags live
+// -run StatusReflectsConnectionLoss ./internal/daemon`.
+func TestLiveDaemonStatusReflectsConnectionLoss(t *testing.T) {
+	host, port := liveStation(t)
+	id, err := identity.Generate()
+	if err != nil {
+		t.Fatalf("identity.Generate: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	srv, err := NewServer(ctx, []connection.Seed{{Host: host, Port: port}}, id)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	defer srv.Close()
+
+	var logBuf bytes.Buffer
+	srv.SetLogger(log.New(&logBuf, "", 0))
+
+	serveCtx, stopServing := context.WithCancel(ctx)
+	defer stopServing()
+	go func() { _ = srv.runServeLoop(serveCtx) }()
+	time.Sleep(500 * time.Millisecond)
+
+	if got := srv.Status(); !got.Connected || got.LastError != "" {
+		t.Fatalf("expected a healthy baseline status before forcing anything, got Connected=%v LastError=%q", got.Connected, got.LastError)
+	}
+
+	dead := srv.serveSession.Load()
+	if err := dead.Close("normal", nil, srv.id); err != nil {
+		t.Logf("forced Close returned an error (expected, connection is being torn down): %v", err)
+	}
+
+	// The actual point: catch Status() DURING the outage, before
+	// respawnDelay + redial has had a chance to complete -- proving this
+	// is observable in real time, not just true in hindsight after
+	// reconnection already happened.
+	sawDisconnected := false
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		got := srv.Status()
+		if !got.Connected {
+			sawDisconnected = true
+			if got.LastError == "" {
+				t.Fatalf("expected LastError populated while Connected=false, got empty")
+			}
+			if !strings.HasPrefix(got.LastError, "serve session:") {
+				t.Fatalf("expected LastError tagged as the serve session's own, got %q", got.LastError)
+			}
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !sawDisconnected {
+		t.Fatalf("never observed Status().Connected go false during the forced outage -- either the kill didn't take, or Status isn't reflecting it in real time")
+	}
+	if !strings.Contains(logBuf.String(), "serve session lost") {
+		t.Fatalf("expected a logged connection-lost line, got:\n%s", logBuf.String())
+	}
+
+	// Now confirm it clears again once reconnected -- same reconnect
+	// wait shape as TestLiveDaemonReconnectsAndReplaysAdvertisement.
+	recoverDeadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(recoverDeadline) {
+		got := srv.Status()
+		if got.Connected && got.LastError == "" {
+			return
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	t.Fatalf("Status() never returned to Connected=true/LastError=\"\" after the forced reconnect")
 }

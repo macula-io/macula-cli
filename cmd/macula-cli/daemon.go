@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"log"
 	"os"
 	"os/signal"
 	"syscall"
@@ -96,6 +97,14 @@ func runDaemonStart(args []string) int {
 		return report.Fail(*jsonOut, err, nil)
 	}
 	defer srv.Close()
+	// os.Stderr, not a log file: unlike a TUI that takes over the
+	// terminal, this command's own usage text already says "pair with a
+	// process supervisor (systemd...)" -- systemd captures stderr to
+	// journald by default, matching every other user-facing message
+	// this codebase already writes via fmt.Fprintf(os.Stderr, ...)
+	// rather than inventing a separate log file/rotation scheme this
+	// codebase doesn't otherwise have.
+	srv.SetLogger(log.New(os.Stderr, "", log.LstdFlags))
 
 	connectedTo := srv.Status().ConnectedTo
 
@@ -156,25 +165,42 @@ func runDaemonStatus(args []string) int {
 	report.Ok(*jsonOut, result, func() {
 		fmt.Printf("identity:     %s\n", result.Identity)
 		fmt.Printf("connected to: %s\n", result.ConnectedTo)
+		if result.Connected {
+			fmt.Println("connected:    yes")
+		} else {
+			fmt.Println("connected:    no -- reconnecting (connected_to above is the last address this daemon WAS reachable through, not where it is now)")
+		}
+		if result.LastError != "" {
+			fmt.Printf("last error:   %s\n", result.LastError)
+		}
 		fmt.Printf("uptime:       %ds\n", result.UptimeSeconds)
-		if len(result.Serving) == 0 {
-			fmt.Println("serving:      (nothing registered)")
-		} else {
-			fmt.Println("serving:")
-			for _, p := range result.Serving {
-				fmt.Printf("  - %s\n", p)
-			}
-		}
-		if len(result.Subscribed) == 0 {
-			fmt.Println("subscribed:   (no subscriptions)")
-		} else {
-			fmt.Println("subscribed:")
-			for _, t := range result.Subscribed {
-				fmt.Printf("  - %s\n", t)
-			}
-		}
+		printStatusList("serving", result.Serving, result.ServingDegraded)
+		printStatusList("subscribed", result.Subscribed, result.SubscribedDegraded)
 	})
 	return 0
+}
+
+// printStatusList renders one of daemon status's "serving"/"subscribed"
+// sections, marking any entry also present in degraded -- still
+// registered/tracked, but its most recent post-reconnect replay failed,
+// so it isn't actually live on the mesh right now despite being listed.
+func printStatusList(label string, entries, degraded []string) {
+	if len(entries) == 0 {
+		fmt.Printf("%s:      (nothing registered)\n", label)
+		return
+	}
+	degradedSet := make(map[string]bool, len(degraded))
+	for _, d := range degraded {
+		degradedSet[d] = true
+	}
+	fmt.Printf("%s:\n", label)
+	for _, e := range entries {
+		if degradedSet[e] {
+			fmt.Printf("  - %s  (DEGRADED -- not currently live, last re-advertise/re-subscribe after a reconnect failed)\n", e)
+		} else {
+			fmt.Printf("  - %s\n", e)
+		}
+	}
 }
 
 func runDaemonStop(args []string) int {

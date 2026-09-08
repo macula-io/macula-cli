@@ -74,6 +74,7 @@ func (srv *Server) runSubscriptionLoop(ctx context.Context) {
 			// existed) so there is still something to replay; only a
 			// real shutdown (ctx done, or reconnect giving up because of
 			// one) closes every watcher below.
+			srv.setSessionLost("subscribe", err.Error())
 			fresh, ok := srv.reconnect(ctx, transport.WebPKI{}, srv.subID)
 			if !ok {
 				srv.closeAllSubscriptions()
@@ -81,6 +82,7 @@ func (srv *Server) runSubscriptionLoop(ctx context.Context) {
 			}
 			srv.subSession.Store(fresh)
 			srv.setConnectedTo(fresh.RemoteAddr())
+			srv.setSessionRecovered("subscribe", fresh.RemoteAddr())
 			srv.replaySubscriptions(fresh)
 			continue
 		}
@@ -106,7 +108,13 @@ func (srv *Server) replaySubscriptions(sess *connection.Session) {
 		if err != nil {
 			continue
 		}
-		_ = sess.Subscribe(frame.NewSubscribeSpec(k.topic, realm, srv.subID.NodeID()), srv.subID)
+		subErr := sess.Subscribe(frame.NewSubscribeSpec(k.topic, realm, srv.subID.NodeID()), srv.subID)
+		srv.subsMu.Lock()
+		srv.subDegraded[k] = subErr != nil
+		srv.subsMu.Unlock()
+		if subErr != nil {
+			srv.log("daemon: re-subscribe %s (realm %s) after reconnect failed, still tracked but not receiving events until the next successful replay: %v", k.topic, k.realmHex, subErr)
+		}
 	}
 }
 
@@ -155,6 +163,7 @@ func (srv *Server) closeAllSubscriptions() {
 		sub.mu.Unlock()
 	}
 	srv.subs = map[topicKey]*subscription{}
+	srv.subDegraded = map[topicKey]bool{}
 	srv.subsMu.Unlock()
 }
 
@@ -174,6 +183,7 @@ func (srv *Server) ensureSubscription(realm []byte, topic string) (*subscription
 	}
 	sub := &subscription{watchers: map[chan PubsubEventNotification]struct{}{}}
 	srv.subs[key] = sub
+	delete(srv.subDegraded, key) // the Subscribe just above already succeeded, or this function would have returned its error instead
 	return sub, nil
 }
 
@@ -203,10 +213,13 @@ func (srv *Server) Unsubscribe(p PubsubUnsubscribeParams) (PubsubUnsubscribeResu
 	srv.subsMu.Lock()
 	sub, existed := srv.subs[key]
 	delete(srv.subs, key)
+	delete(srv.subDegraded, key)
 	srv.subsMu.Unlock()
 
 	if existed {
-		_ = srv.subSession.Load().Unsubscribe(frame.NewUnsubscribeSpec(p.Topic, realm, srv.subID.NodeID()), srv.subID)
+		if err := srv.subSession.Load().Unsubscribe(frame.NewUnsubscribeSpec(p.Topic, realm, srv.subID.NodeID()), srv.subID); err != nil {
+			srv.log("daemon: unsubscribe %s (realm %s) failed, topic was still untracked locally: %v", p.Topic, hex.EncodeToString(realm), err)
+		}
 		sub.mu.Lock()
 		for ch := range sub.watchers {
 			close(ch)
@@ -240,6 +253,20 @@ func (srv *Server) subscriptionTopics() []string {
 	topics := make([]string, 0, len(srv.subs))
 	for k := range srv.subs {
 		topics = append(topics, k.topic)
+	}
+	return topics
+}
+
+// subscriptionDegradedTopics is ServingDegraded's counterpart for
+// subscriptions -- see StatusResult.SubscribedDegraded's own doc.
+func (srv *Server) subscriptionDegradedTopics() []string {
+	srv.subsMu.Lock()
+	defer srv.subsMu.Unlock()
+	topics := make([]string, 0)
+	for k := range srv.subs {
+		if srv.subDegraded[k] {
+			topics = append(topics, k.topic)
+		}
 	}
 	return topics
 }

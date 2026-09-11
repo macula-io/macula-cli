@@ -1,10 +1,12 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/macula-io/macula-go/ucan"
@@ -40,14 +42,32 @@ func (c *capabilityFlag) String() string {
 	return fmt.Sprintf("%v", []ucan.Capability(*c))
 }
 
+// Set splits a "with:can" value at its last colon: a with may be an MRI,
+// which has colons of its own, and an ability has none.
 func (c *capabilityFlag) Set(s string) error {
-	for i := 0; i < len(s); i++ {
-		if s[i] == ':' {
-			*c = append(*c, ucan.Capability{With: s[:i], Can: s[i+1:]})
-			return nil
-		}
+	i := strings.LastIndexByte(s, ':')
+	if i < 0 {
+		return fmt.Errorf("-capability must be \"with:can\", got %q", s)
 	}
-	return fmt.Errorf("-capability must be \"with:can\", got %q", s)
+	if err := validateCapability(s[:i], s[i+1:]); err != nil {
+		return fmt.Errorf("-capability %q: %w", s, err)
+	}
+	*c = append(*c, ucan.Capability{With: s[:i], Can: s[i+1:]})
+	return nil
+}
+
+// validateCapability refuses an empty with or can, and a can with a colon
+// in it, which no ability has.
+func validateCapability(with, can string) error {
+	switch {
+	case with == "":
+		return errors.New("the with before the last colon is empty")
+	case can == "":
+		return errors.New("the can after the last colon is empty")
+	case strings.ContainsRune(can, ':'):
+		return fmt.Errorf("the can %q contains a colon", can)
+	}
+	return nil
 }
 
 type ucanMintResult struct {
@@ -63,13 +83,16 @@ func runUcanMint(args []string) int {
 	expiresIn := fs.Duration("expires-in", 0, "token expires this long from now (0 = no expiration)")
 	out := fs.String("out", "", "write the token to this file (default: print to stdout)")
 	var caps capabilityFlag
-	fs.Var(&caps, "capability", "a \"with:can\" capability entry; repeat for more than one")
+	fs.Var(&caps, "capability", "a \"with:can\" capability entry, split at its last colon; repeat for more than one")
 	fs.Usage = func() {
 		fmt.Fprint(fs.Output(), "Usage: macula-cli ucan mint [flags] <issuer> <audience>\n\n"+
 			"Mints a UCAN token self-issued and signed by the local identity, matching\n"+
 			"macula-go's ucan.Create exactly -- the same token verifies against\n"+
 			"macula-rust, macula-dotnet, macula-php, or the Erlang reference.\n"+
-			"<issuer>/<audience> are opaque DID strings, not validated here.\n\nFlags:\n")
+			"<issuer>/<audience> are opaque DID strings, not validated here.\n"+
+			"A -capability value splits at its last colon: the with may be an MRI such\n"+
+			"as mri:realm:io.macula, and the can after it has no colon, as in\n"+
+			"-capability mri:realm:io.macula:member/email-verified.\n\nFlags:\n")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {

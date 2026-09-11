@@ -77,7 +77,7 @@ func TestLiveRegisterDirect_PublishesResolvableRecordWhileServing(t *testing.T) 
 	realm := make([]byte, 32)
 	var lastErr error
 	for attempt := 0; attempt < 10; attempt++ {
-		station, _, _, rerr := directdial.Resolve(resolver, other, realm, procedure)
+		station, _, _, rerr := directdial.Resolve(ctx, resolver, other, realm, procedure)
 		if rerr == nil {
 			if hex.EncodeToString(station) != hex.EncodeToString(srv.serveSession.Load().Station.NodeID) {
 				t.Fatalf("resolved station %x, daemon serves on %x", station, srv.serveSession.Load().Station.NodeID)

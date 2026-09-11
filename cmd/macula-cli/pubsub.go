@@ -7,12 +7,12 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"net"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
+	"github.com/macula-io/macula-go/connection"
 	"github.com/macula-io/macula-go/frame"
 
 	"github.com/macula-io/macula-cli/internal/daemon"
@@ -213,11 +213,11 @@ func runPubsubWatch(args []string) int {
 	}
 	defer session.Close("normal", nil, id)
 
-	subSpec := frame.NewSubscribeSpec(topic, realm, id.NodeID())
-	if err := session.Subscribe(subSpec, id); err != nil {
+	sub, err := session.Subscribe(frame.NewSubscribeSpec(topic, realm, id.NodeID()), id)
+	if err != nil {
 		return report.Fail(*jsonOut, err, nil)
 	}
-	defer session.Unsubscribe(frame.NewUnsubscribeSpec(topic, realm, id.NodeID()), id)
+	defer sub.Close()
 
 	if !*jsonOut {
 		fmt.Fprintf(os.Stderr, "watching %q on %s (Ctrl-C to stop)\n", topic, session.RemoteAddr())
@@ -244,19 +244,10 @@ func runPubsubWatch(args []string) int {
 		default:
 		}
 
-		evt, err := session.RecvEvent(*pollTimeout)
+		evt, err := sub.Recv(*pollTimeout)
 		if err != nil {
-			var netErr net.Error
-			if errors.As(err, &netErr) && netErr.Timeout() {
+			if errors.Is(err, connection.ErrRecvTimeout) {
 				continue // just a poll timeout, keep watching
-			}
-			if errors.Is(err, frame.ErrNotAnEventFrame) {
-				// The control stream isn't event-exclusive: a session
-				// can receive unsolicited non-EVENT frames on it (e.g.
-				// built-in advertise gossip for _content.* procedures,
-				// found live 2026-08-29). RecvFrame already consumed
-				// it, so just keep waiting for the next one.
-				continue
 			}
 			return report.Fail(*jsonOut, err, nil)
 		}

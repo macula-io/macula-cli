@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
 	"sync"
 	"time"
 
@@ -30,108 +29,233 @@ type topicKey struct {
 // how many (if any) control-socket connections are currently watching
 // it -- "subscribe" creates durable state, "watch" just taps into it,
 // matching PubsubSubscribeParams's own doc on why these are separate
-// verbs. Unlike an earlier draft of this file, a subscription owns no
-// goroutine or Session of its own -- see runSubscriptionLoop's doc on
-// why every topic shares Server.subSession and ONE receive loop.
+// verbs. live is its connection.Subscription on the current subscribe
+// session, replaced after a reconnect; forwardEvents hands what live
+// receives to every watcher. Once ended, a subscription takes no new
+// watcher and no new live subscription.
 type subscription struct {
 	mu       sync.Mutex
 	watchers map[chan PubsubEventNotification]struct{}
+	live     *connection.Subscription
+	ended    bool
 }
 
-// subscriptionPollInterval bounds how long a single RecvEvent wait on
-// srv.subSession blocks between checking ctx -- mirrors
-// macula-go's own subscriberPollInterval reasoning exactly.
+// subscriptionPollInterval bounds one Subscription.Recv wait. Not a wire
+// timeout: a forwarder simply waits again.
 const subscriptionPollInterval = 2 * time.Second
 
-// runSubscriptionLoop is the ONLY goroutine that ever reads
-// srv.subSession's control stream, for as long as this daemon runs.
-// Every topic this daemon subscribes to shares this one session and
-// this one loop, dispatched to the right subscription by (realm,
-// topic) -- running one reader per topic on a SHARED session would
-// just relocate Server's own documented "one thing at a time" race
-// between subscriptions instead of eliminating it, since RecvEvent
-// doesn't filter by topic; whichever goroutine happens to call it
-// first wins the next frame regardless of which topic it's actually
-// for.
-func (srv *Server) runSubscriptionLoop(ctx context.Context) {
+// runSubscriptionSupervisor watches the subscribe session and, once it
+// ends, redials it and subscribes every tracked topic again on the fresh
+// session, mirroring the reference SDK's respawn_link + subs_to
+// (macula_client.erl, macula_client_replay.erl). srv.subs is not cleared
+// on a reconnect, so there is still something to replay; only a real
+// shutdown (ctx done, or reconnect giving up because of one) ends every
+// subscription.
+func (srv *Server) runSubscriptionSupervisor(ctx context.Context) {
 	for {
+		sess := srv.subSession.Load()
 		select {
 		case <-ctx.Done():
 			srv.closeAllSubscriptions()
 			return
-		default:
+		case <-sess.Done():
 		}
-		evt, err := srv.subSession.Load().RecvEvent(subscriptionPollInterval)
-		if err != nil {
-			if isRecvTimeout(err) || errors.Is(err, frame.ErrNotAnEventFrame) {
-				continue
-			}
-			// A real connection failure -- redial and replay every
-			// currently-tracked subscription before resuming, mirroring
-			// the reference SDK's respawn_link + subs_to
-			// (macula_client.erl, macula_client_replay.erl). srv.subs is
-			// deliberately NOT cleared here (unlike before reconnect
-			// existed) so there is still something to replay; only a
-			// real shutdown (ctx done, or reconnect giving up because of
-			// one) closes every watcher below.
-			srv.setSessionLost("subscribe", err.Error())
-			fresh, ok := srv.reconnect(ctx, transport.WebPKI{}, srv.subID)
-			if !ok {
-				srv.closeAllSubscriptions()
-				return
-			}
-			srv.subSession.Store(fresh)
-			srv.setConnectedTo(fresh.RemoteAddr())
-			srv.setSessionRecovered("subscribe", fresh.RemoteAddr())
-			srv.replaySubscriptions(fresh)
-			continue
+		srv.setSessionLost("subscribe", sessionEndReason(sess))
+		fresh, ok := srv.reconnect(ctx, transport.WebPKI{}, srv.subID)
+		if !ok {
+			srv.closeAllSubscriptions()
+			return
 		}
-		srv.dispatchEvent(evt)
+		srv.subSession.Store(fresh)
+		srv.setConnectedTo(fresh.RemoteAddr())
+		srv.setSessionRecovered("subscribe", fresh.RemoteAddr())
+		srv.replaySubscriptions(fresh)
 	}
 }
 
-// replaySubscriptions re-sends SUBSCRIBE for every topic this daemon
-// currently tracks onto a freshly (re)connected subscribe session --
-// the pub/sub analogue of replayAdvertisements (server.go), mirroring
+// sessionEndReason is why sess ended, as its Err reports it.
+func sessionEndReason(sess *connection.Session) string {
+	if err := sess.Err(); err != nil {
+		return err.Error()
+	}
+	return "connection closed"
+}
+
+// replaySubscriptions subscribes every topic this daemon tracks on a
+// freshly (re)connected subscribe session -- the pub/sub analogue of
+// replayAdvertisements (server.go), mirroring
 // macula_client_replay:subs_to/2. Best-effort for the same reason: a
-// failed re-subscribe here leaves srv.subs untouched, so it's retried
-// on the next reconnect rather than silently dropped.
+// topic whose re-subscribe fails stays in srv.subs, marked degraded, and
+// is retried on the next reconnect rather than silently dropped.
 func (srv *Server) replaySubscriptions(sess *connection.Session) {
 	srv.subsMu.Lock()
-	keys := make([]topicKey, 0, len(srv.subs))
-	for k := range srv.subs {
-		keys = append(keys, k)
+	tracked := make(map[topicKey]*subscription, len(srv.subs))
+	for k, sub := range srv.subs {
+		tracked[k] = sub
 	}
 	srv.subsMu.Unlock()
-	for _, k := range keys {
+	for k, sub := range tracked {
 		realm, err := hex.DecodeString(k.realmHex)
 		if err != nil {
 			continue
 		}
-		subErr := sess.Subscribe(frame.NewSubscribeSpec(k.topic, realm, srv.subID.NodeID()), srv.subID)
-		srv.subsMu.Lock()
-		srv.subDegraded[k] = subErr != nil
-		srv.subsMu.Unlock()
+		live, subErr := sess.Subscribe(frame.NewSubscribeSpec(k.topic, realm, srv.subID.NodeID()), srv.subID)
+		srv.setSubscriptionDegraded(k, sub, subErr != nil)
 		if subErr != nil {
 			srv.log("daemon: re-subscribe %s (realm %s) after reconnect failed, still tracked but not receiving events until the next successful replay: %v", k.topic, k.realmHex, subErr)
+			continue
+		}
+		if sub.follow(live) {
+			go srv.forwardEvents(k, sub, live)
 		}
 	}
 }
 
-func isRecvTimeout(err error) bool {
-	var netErr net.Error
-	return errors.As(err, &netErr) && netErr.Timeout()
+// setSubscriptionDegraded records whether k's most recent (re)subscribe
+// failed, as long as sub is still the subscription tracked for k.
+func (srv *Server) setSubscriptionDegraded(k topicKey, sub *subscription, degraded bool) {
+	srv.subsMu.Lock()
+	defer srv.subsMu.Unlock()
+	if srv.subs[k] == sub {
+		srv.subDegraded[k] = degraded
+	}
 }
 
-func (srv *Server) dispatchEvent(evt frame.EventInfo) {
-	key := topicKey{hex.EncodeToString(evt.Realm), evt.Topic}
-	srv.subsMu.Lock()
-	sub, ok := srv.subs[key]
-	srv.subsMu.Unlock()
-	if !ok {
-		return // nothing here is subscribed to this -- shouldn't happen, harmless if it does
+// forwardEvents hands every event live receives to sub's watchers, until
+// live ends: replaced after a reconnect, closed by Unsubscribe, or ended
+// with its session. A subscription that fell behind its queue is replaced
+// on the current subscribe session first and closed after, so the station
+// keeps the topic subscribed throughout.
+func (srv *Server) forwardEvents(k topicKey, sub *subscription, live *connection.Subscription) {
+	for {
+		evt, err := live.Recv(subscriptionPollInterval)
+		switch {
+		case err == nil:
+			sub.deliver(eventNotification(evt))
+		case errors.Is(err, connection.ErrRecvTimeout):
+		case errors.Is(err, connection.ErrConsumerOverflow):
+			next, ok := srv.replaceOverflowed(k, sub, live)
+			if !ok {
+				return
+			}
+			live = next
+		default:
+			return
+		}
 	}
-	out := PubsubEventNotification{
+}
+
+// replaceOverflowed subscribes k again on the current subscribe session,
+// then closes live, the subscription that fell behind. It reports false
+// when there is nothing left to forward: the replacement failed, or sub
+// has ended or moved on to another live subscription meanwhile.
+func (srv *Server) replaceOverflowed(k topicKey, sub *subscription, live *connection.Subscription) (*connection.Subscription, bool) {
+	realm, err := hex.DecodeString(k.realmHex)
+	if err != nil {
+		_ = live.Close()
+		return nil, false
+	}
+	next, subErr := srv.subSession.Load().Subscribe(frame.NewSubscribeSpec(k.topic, realm, srv.subID.NodeID()), srv.subID)
+	if subErr != nil {
+		_ = live.Close()
+		srv.setSubscriptionDegraded(k, sub, true)
+		srv.log("daemon: replacing the subscription to %s (realm %s) that fell behind failed, still tracked but not receiving events until the next successful replay: %v", k.topic, k.realmHex, subErr)
+		return nil, false
+	}
+	if !sub.swap(live, next) {
+		_ = next.Close()
+		_ = live.Close()
+		return nil, false
+	}
+	_ = live.Close()
+	return next, true
+}
+
+// follow makes live this subscription's current one, closing the one it
+// replaces. It reports false, closing live instead, once the subscription
+// has ended.
+func (sub *subscription) follow(live *connection.Subscription) bool {
+	sub.mu.Lock()
+	if sub.ended {
+		sub.mu.Unlock()
+		_ = live.Close()
+		return false
+	}
+	prev := sub.live
+	sub.live = live
+	sub.mu.Unlock()
+	if prev != nil {
+		_ = prev.Close()
+	}
+	return true
+}
+
+// swap makes next this subscription's current one in place of prev. It
+// reports false when the subscription has ended or prev is no longer its
+// current one.
+func (sub *subscription) swap(prev, next *connection.Subscription) bool {
+	sub.mu.Lock()
+	defer sub.mu.Unlock()
+	if sub.ended || sub.live != prev {
+		return false
+	}
+	sub.live = next
+	return true
+}
+
+// deliver hands out to every watcher without waiting on any of them.
+func (sub *subscription) deliver(out PubsubEventNotification) {
+	sub.mu.Lock()
+	defer sub.mu.Unlock()
+	for ch := range sub.watchers {
+		select {
+		case ch <- out:
+		default:
+			// A slow watcher drops an event rather than blocking every
+			// other watcher, or this topic's forwarder, on one laggard.
+		}
+	}
+}
+
+// addWatcher attaches out, and reports false when the subscription has
+// already ended.
+func (sub *subscription) addWatcher(out chan PubsubEventNotification) bool {
+	sub.mu.Lock()
+	defer sub.mu.Unlock()
+	if sub.ended {
+		return false
+	}
+	sub.watchers[out] = struct{}{}
+	return true
+}
+
+func (sub *subscription) removeWatcher(out chan PubsubEventNotification) {
+	sub.mu.Lock()
+	defer sub.mu.Unlock()
+	delete(sub.watchers, out)
+}
+
+// end closes every watcher and the live subscription, and keeps a later
+// replay from starting another. It returns the live subscription's Close
+// error, which is how a failed UNSUBSCRIBE surfaces.
+func (sub *subscription) end() error {
+	sub.mu.Lock()
+	sub.ended = true
+	for ch := range sub.watchers {
+		close(ch)
+	}
+	sub.watchers = nil
+	live := sub.live
+	sub.live = nil
+	sub.mu.Unlock()
+	if live == nil {
+		return nil
+	}
+	return live.Close()
+}
+
+func eventNotification(evt frame.EventInfo) PubsubEventNotification {
+	return PubsubEventNotification{
 		Topic:        evt.Topic,
 		Publisher:    hex.EncodeToString(evt.Publisher),
 		Seq:          evt.Seq,
@@ -139,32 +263,17 @@ func (srv *Server) dispatchEvent(evt frame.EventInfo) {
 		DeliveredVia: evt.DeliveredVia,
 		ReceivedAt:   time.Now().UTC().Format(time.RFC3339Nano),
 	}
-	sub.mu.Lock()
-	for ch := range sub.watchers {
-		select {
-		case ch <- out:
-		default:
-			// A slow watcher drops an event rather than blocking every
-			// other watcher, or runSubscriptionLoop itself, on one
-			// laggard.
-		}
-	}
-	sub.mu.Unlock()
 }
 
 func (srv *Server) closeAllSubscriptions() {
 	srv.subsMu.Lock()
-	for _, sub := range srv.subs {
-		sub.mu.Lock()
-		for ch := range sub.watchers {
-			close(ch)
-		}
-		sub.watchers = nil
-		sub.mu.Unlock()
-	}
+	subs := srv.subs
 	srv.subs = map[topicKey]*subscription{}
 	srv.subDegraded = map[topicKey]bool{}
 	srv.subsMu.Unlock()
+	for _, sub := range subs {
+		_ = sub.end()
+	}
 }
 
 // ensureSubscription creates (realm, topic)'s subscription -- issuing
@@ -177,13 +286,14 @@ func (srv *Server) ensureSubscription(realm []byte, topic string) (*subscription
 	if sub, ok := srv.subs[key]; ok {
 		return sub, nil
 	}
-	spec := frame.NewSubscribeSpec(topic, realm, srv.subID.NodeID())
-	if err := srv.subSession.Load().Subscribe(spec, srv.subID); err != nil {
+	live, err := srv.subSession.Load().Subscribe(frame.NewSubscribeSpec(topic, realm, srv.subID.NodeID()), srv.subID)
+	if err != nil {
 		return nil, fmt.Errorf("subscribe: %w", err)
 	}
-	sub := &subscription{watchers: map[chan PubsubEventNotification]struct{}{}}
+	sub := &subscription{watchers: map[chan PubsubEventNotification]struct{}{}, live: live}
 	srv.subs[key] = sub
 	delete(srv.subDegraded, key) // the Subscribe just above already succeeded, or this function would have returned its error instead
+	go srv.forwardEvents(key, sub, live)
 	return sub, nil
 }
 
@@ -217,15 +327,9 @@ func (srv *Server) Unsubscribe(p PubsubUnsubscribeParams) (PubsubUnsubscribeResu
 	srv.subsMu.Unlock()
 
 	if existed {
-		if err := srv.subSession.Load().Unsubscribe(frame.NewUnsubscribeSpec(p.Topic, realm, srv.subID.NodeID()), srv.subID); err != nil {
+		if err := sub.end(); err != nil {
 			srv.log("daemon: unsubscribe %s (realm %s) failed, topic was still untracked locally: %v", p.Topic, hex.EncodeToString(realm), err)
 		}
-		sub.mu.Lock()
-		for ch := range sub.watchers {
-			close(ch)
-		}
-		sub.watchers = nil
-		sub.mu.Unlock()
 	}
 	return PubsubUnsubscribeResult{Unsubscribed: existed}, nil
 }
@@ -237,14 +341,10 @@ func (srv *Server) watch(realm []byte, topic string, out chan PubsubEventNotific
 	if err != nil {
 		return nil, err
 	}
-	sub.mu.Lock()
-	sub.watchers[out] = struct{}{}
-	sub.mu.Unlock()
-	return func() {
-		sub.mu.Lock()
-		delete(sub.watchers, out)
-		sub.mu.Unlock()
-	}, nil
+	if !sub.addWatcher(out) {
+		return nil, fmt.Errorf("subscription to %q ended", topic)
+	}
+	return func() { sub.removeWatcher(out) }, nil
 }
 
 func (srv *Server) subscriptionTopics() []string {

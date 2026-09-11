@@ -730,7 +730,7 @@ func (srv *Server) Run(parentCtx context.Context, socketPath string) error {
 	serveErrCh := make(chan error, 1)
 	go func() { serveErrCh <- srv.runServeLoop(ctx) }()
 
-	go srv.runSubscriptionLoop(ctx)
+	go srv.runSubscriptionSupervisor(ctx)
 	go srv.runCallSessionSupervisor(ctx)
 
 	acceptErrCh := make(chan error, 1)

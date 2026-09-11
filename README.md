@@ -81,8 +81,8 @@ is that throwaway program, built once and kept.
 - **`ucan mint` / `ucan inspect`** — mint a UCAN token signed by the local
   identity, or decode one's claims without checking its signature.
 - **`daemon start` / `status` / `stop`** — macula-cli's optional long-lived
-  mode: one process holds a station connection open (three Sessions,
-  actually — see [Daemon mode](#daemon-mode)) and answers CALLs for
+  mode: one process holds one station connection open, under its own
+  identity (see [Daemon mode](#daemon-mode)), and answers CALLs for
   whatever `serve -daemon` registers, until stopped. Other `macula-cli`
   invocations control it over a local Unix domain control socket instead
   of each dialing the mesh fresh — see [Daemon mode](#daemon-mode) below.
@@ -223,7 +223,7 @@ internal/daemon/         daemon mode: three long-lived Sessions (serve/call/subs
 | `internal/identitystore` | Loads a persisted identity or mints a fresh puzzle-hardened one (`identity.Generate` — never the unhardened path). |
 | `internal/report` | Shared `--json` / human-text output, surfaces BOLT#4 code/name/retryable for wire-level failures. |
 | `internal/wirevalue` | Converts between JSON (what a human or an agent types/reads) and `cbor.Value` (what the wire actually carries) — deliberately narrow, since Macula's CBOR has no `bool` and no float/int ambiguity the way JSON does. |
-| `internal/daemon` | `Server` holds three Sessions (serve/call/subscribe — see [Daemon mode](#daemon-mode)) plus mutex-guarded procedure and subscription registries, driving `macula-go`'s `ServeForever`; each Session independently redials the seed pool and replays its own state (advertisements, subscriptions) if its connection dies — see [Resilience](#daemon-mode). `Do`/`Watch`/`Listen`/`SocketPath` are the newline-delimited-JSON control-socket client and server halves `cmd/macula-cli`'s daemon-aware commands share. |
+| `internal/daemon` | `Server` holds one Session under the daemon's own identity (see [Daemon mode](#daemon-mode)) plus mutex-guarded procedure and subscription registries, driving `macula-go`'s `ServeForever`; when that Session's connection dies it redials the seed pool and replays advertisements and subscriptions together (see [Resilience](#daemon-mode)). `Do`/`Watch`/`Listen`/`SocketPath` are the newline-delimited-JSON control-socket client and server halves `cmd/macula-cli`'s daemon-aware commands share. |
 
 ---
 
@@ -278,17 +278,14 @@ macula-cli serve -daemon -stop my.echo
 macula-cli daemon stop
 ```
 
-**Three Sessions, not one.** A daemon connects three times, not once: one
-Session (the daemon's real, persisted identity) owns serving and every
-advertisement; a second, ephemeral-identity Session is dedicated to
-`call -via-daemon`; a third, separately ephemeral, is dedicated to every
-`pubsub subscribe`d topic, sharing one receive loop that dispatches by
-topic. This isn't caution for its own sake -- `macula-go`'s control
-stream is documented as "one thing at a time," and a single-Session build
-of this hit exactly that race live: answering inbound calls while also
-making an outbound one intermittently stole the reply meant for the
-outbound caller. Splitting by concern removes the race instead of hoping
-timing stays lucky.
+**One Session, under the daemon's own identity.** A daemon connects once.
+That one Session serves every registered procedure, makes every
+`call -via-daemon` call and carries every `pubsub subscribe`d topic, all at
+the same time: `macula-go` routes each reply, event and inbound CALL on a
+Session to whoever is waiting for it. Every outgoing call and subscription
+is made as the daemon's own persisted identity, the one `daemon status`
+reports, so a token minted for that identity (an audience-bound UCAN) is
+accepted and a provider that checks its caller sees that identity.
 
 **Resilience: multi-seed dial and reconnect.** `call`, `pubsub publish`,
 `pubsub watch`, `dht find-*`, `serve`, and `daemon start` all accept a
@@ -296,11 +293,11 @@ repeatable `-seed host[:port]` flag: additional stations tried, in order,
 after the main `<host[:port]>` if it doesn't answer. For a one-shot command
 that's the whole story -- first seed that answers wins, matching
 `macula-go`'s own `connection.ConnectSeeds`. For `daemon start`, it's more:
-if any of the daemon's three Sessions loses its connection later -- the
-station restarted, a network blip, anything -- that Session redials the
-seed pool (rotating whichever seed just failed toward the back) and
-replays whatever state it owns onto the fresh connection: every registered
-procedure re-`ADVERTISE`d, every subscribed topic re-`SUBSCRIBE`d. A
+if the daemon's Session loses its connection later -- the station
+restarted, a network blip, anything -- it redials the seed pool (rotating
+whichever seed just failed toward the back) and replays its state onto the
+fresh connection: every registered procedure re-`ADVERTISE`d and every
+subscribed topic re-`SUBSCRIBE`d, together. A
 served procedure or an active subscription survives a station bounce
 without anything re-running `serve`/`pubsub subscribe` by hand. This is
 the same respawn-and-replay shape the reference Erlang SDK's own client
@@ -374,8 +371,8 @@ other way to hand a registration a live answer. `-exec` runs the given
 shell command once per inbound CALL (`sh -c` on Linux/macOS, `cmd /C` on
 Windows), writing the payload as one JSON document to its stdin and
 reading its entire stdout back as the reply (empty stdout replies
-`null`). Every procedure a daemon serves shares its one `serveSession`
-(see "Three Sessions, not one" above) — a hung exec would block every
+`null`). Every procedure a daemon serves is answered by one serve loop,
+one call at a time, so a hung exec would block every
 OTHER registered procedure too, not just its own, so `-exec-timeout`
 (10s default) kills it and turns the call into a normal ERROR reply
 instead. A non-zero exit or invalid JSON on stdout do the same — none of

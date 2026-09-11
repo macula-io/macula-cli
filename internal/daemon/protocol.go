@@ -103,18 +103,13 @@ type ServeUnregisterResult struct {
 type StatusResult struct {
 	Identity    string `json:"identity"`
 	ConnectedTo string `json:"connected_to"`
-	// Connected reports the SERVE session specifically -- whether other
-	// mesh peers can currently reach this daemon at all -- not the call
-	// or subscribe sessions, which can drop and reconnect independently
-	// (see Server's own doc on why there are three). false while a
-	// reconnect is in progress; ConnectedTo then still names the last
-	// address this daemon WAS reachable through, not where it is now --
-	// check Connected before trusting that field as current.
+	// Connected reports whether the daemon's one session is up. false
+	// while a reconnect is in progress; ConnectedTo then still names the
+	// last address this daemon WAS reachable through, not where it is now
+	// -- check Connected before trusting that field as current.
 	Connected bool `json:"connected"`
-	// LastError is the most recent connection-loss reason from any of
-	// the three sessions (serve/call/subscribe), tagged with which one,
-	// cleared the next time THAT session reconnects successfully. Empty
-	// once every session that has ever dropped is currently healthy.
+	// LastError is why the session was most recently lost, cleared once
+	// it reconnects.
 	LastError     string   `json:"last_error,omitempty"`
 	UptimeSeconds int64    `json:"uptime_seconds"`
 	Serving       []string `json:"serving"`

@@ -17,9 +17,8 @@ import (
 )
 
 // DefaultExecTimeout bounds one exec-backed handler invocation. Every
-// procedure registered on a daemon shares ONE serveSession (see
-// Server's own doc on why) -- ServeForever answers inbound CALLs one at
-// a time on that session's control stream, so a hung external command
+// procedure registered on a daemon is served by one ServeForever loop,
+// which answers inbound CALLs one at a time, so a hung external command
 // wedges every OTHER registered procedure too, not just its own. This
 // exists to guarantee a runaway or misbehaving script can't do that
 // silently; -exec-timeout overrides it per registration.

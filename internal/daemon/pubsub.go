@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"bufio"
-	"context"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -12,7 +11,6 @@ import (
 
 	"github.com/macula-io/macula-go/connection"
 	"github.com/macula-io/macula-go/frame"
-	"github.com/macula-io/macula-go/transport"
 
 	"github.com/macula-io/macula-cli/internal/wirevalue"
 )
@@ -29,7 +27,7 @@ type topicKey struct {
 // how many (if any) control-socket connections are currently watching
 // it -- "subscribe" creates durable state, "watch" just taps into it,
 // matching PubsubSubscribeParams's own doc on why these are separate
-// verbs. live is its connection.Subscription on the current subscribe
+// verbs. live is its connection.Subscription on the daemon's current
 // session, replaced after a reconnect; forwardEvents hands what live
 // receives to every watcher. Once ended, a subscription takes no new
 // watcher and no new live subscription.
@@ -44,45 +42,10 @@ type subscription struct {
 // timeout: a forwarder simply waits again.
 const subscriptionPollInterval = 2 * time.Second
 
-// runSubscriptionSupervisor watches the subscribe session and, once it
-// ends, redials it and subscribes every tracked topic again on the fresh
-// session, mirroring the reference SDK's respawn_link + subs_to
-// (macula_client.erl, macula_client_replay.erl). srv.subs is not cleared
-// on a reconnect, so there is still something to replay; only a real
-// shutdown (ctx done, or reconnect giving up because of one) ends every
-// subscription.
-func (srv *Server) runSubscriptionSupervisor(ctx context.Context) {
-	for {
-		sess := srv.subSession.Load()
-		select {
-		case <-ctx.Done():
-			srv.closeAllSubscriptions()
-			return
-		case <-sess.Done():
-		}
-		srv.setSessionLost("subscribe", sessionEndReason(sess))
-		fresh, ok := srv.reconnect(ctx, transport.WebPKI{}, srv.subID)
-		if !ok {
-			srv.closeAllSubscriptions()
-			return
-		}
-		srv.subSession.Store(fresh)
-		srv.setConnectedTo(fresh.RemoteAddr())
-		srv.setSessionRecovered("subscribe", fresh.RemoteAddr())
-		srv.replaySubscriptions(fresh)
-	}
-}
 
-// sessionEndReason is why sess ended, as its Err reports it.
-func sessionEndReason(sess *connection.Session) string {
-	if err := sess.Err(); err != nil {
-		return err.Error()
-	}
-	return "connection closed"
-}
 
 // replaySubscriptions subscribes every topic this daemon tracks on a
-// freshly (re)connected subscribe session -- the pub/sub analogue of
+// freshly (re)connected session -- the pub/sub analogue of
 // replayAdvertisements (server.go), mirroring
 // macula_client_replay:subs_to/2. Best-effort for the same reason: a
 // topic whose re-subscribe fails stays in srv.subs, marked degraded, and
@@ -99,7 +62,7 @@ func (srv *Server) replaySubscriptions(sess *connection.Session) {
 		if err != nil {
 			continue
 		}
-		live, subErr := sess.Subscribe(frame.NewSubscribeSpec(k.topic, realm, srv.subID.NodeID()), srv.subID)
+		live, subErr := sess.Subscribe(frame.NewSubscribeSpec(k.topic, realm, srv.id.NodeID()), srv.id)
 		srv.setSubscriptionDegraded(k, sub, subErr != nil)
 		if subErr != nil {
 			srv.log("daemon: re-subscribe %s (realm %s) after reconnect failed, still tracked but not receiving events until the next successful replay: %v", k.topic, k.realmHex, subErr)
@@ -124,7 +87,7 @@ func (srv *Server) setSubscriptionDegraded(k topicKey, sub *subscription, degrad
 // forwardEvents hands every event live receives to sub's watchers, until
 // live ends: replaced after a reconnect, closed by Unsubscribe, or ended
 // with its session. A subscription that fell behind its queue is replaced
-// on the current subscribe session first and closed after, so the station
+// on the current session first and closed after, so the station
 // keeps the topic subscribed throughout.
 func (srv *Server) forwardEvents(k topicKey, sub *subscription, live *connection.Subscription) {
 	for {
@@ -145,7 +108,7 @@ func (srv *Server) forwardEvents(k topicKey, sub *subscription, live *connection
 	}
 }
 
-// replaceOverflowed subscribes k again on the current subscribe session,
+// replaceOverflowed subscribes k again on the daemon's current session,
 // then closes live, the subscription that fell behind. It reports false
 // when there is nothing left to forward: the replacement failed, or sub
 // has ended or moved on to another live subscription meanwhile.
@@ -155,7 +118,7 @@ func (srv *Server) replaceOverflowed(k topicKey, sub *subscription, live *connec
 		_ = live.Close()
 		return nil, false
 	}
-	next, subErr := srv.subSession.Load().Subscribe(frame.NewSubscribeSpec(k.topic, realm, srv.subID.NodeID()), srv.subID)
+	next, subErr := srv.session.Load().Subscribe(frame.NewSubscribeSpec(k.topic, realm, srv.id.NodeID()), srv.id)
 	if subErr != nil {
 		_ = live.Close()
 		srv.setSubscriptionDegraded(k, sub, true)
@@ -277,7 +240,7 @@ func (srv *Server) closeAllSubscriptions() {
 }
 
 // ensureSubscription creates (realm, topic)'s subscription -- issuing
-// the actual wire SUBSCRIBE on srv.subSession -- the first time it's
+// the actual wire SUBSCRIBE on the daemon's session -- the first time it's
 // asked for, and just returns the existing one on every call after.
 func (srv *Server) ensureSubscription(realm []byte, topic string) (*subscription, error) {
 	key := topicKey{hex.EncodeToString(realm), topic}
@@ -286,7 +249,7 @@ func (srv *Server) ensureSubscription(realm []byte, topic string) (*subscription
 	if sub, ok := srv.subs[key]; ok {
 		return sub, nil
 	}
-	live, err := srv.subSession.Load().Subscribe(frame.NewSubscribeSpec(topic, realm, srv.subID.NodeID()), srv.subID)
+	live, err := srv.session.Load().Subscribe(frame.NewSubscribeSpec(topic, realm, srv.id.NodeID()), srv.id)
 	if err != nil {
 		return nil, fmt.Errorf("subscribe: %w", err)
 	}

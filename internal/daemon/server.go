@@ -33,36 +33,15 @@ type procKey struct {
 	procedure string
 }
 
-// Server holds THREE Sessions to the same station and a
-// dynamically-changing registry of procedures served against one of
-// them -- not one Session doing everything. macula-go's
-// FrameStream.Call/RecvFrame explicitly documents that a shared
-// control stream has "one thing at a time" semantics: any frame
-// arriving while something else is waiting on that same stream gets
-// discarded or misattributed, not queued. A single-Session daemon
-// answering inbound CALLs (ServeForever) while ALSO making outbound
-// calls and running subscriptions on that same stream hits this for
-// real -- confirmed live: an outbound call.invoke intermittently timed
-// out because ServeForever's own receive loop had already consumed
-// and discarded the RESULT frame meant for it. Splitting by concern
-// (matching the SDK's own "use a second Session" guidance, and its
-// live tests' own convention of a fresh identity per Session) removes
-// the race entirely instead of trying to get lucky with timing:
-//
-//   - serveSession/id: the daemon's real, persisted identity. Owns
-//     ServeForever and every Register/Unregister Advertise/Unadvertise
-//     -- this is the identity "daemon status" reports, and the one a
-//     caller resolves to reach anything this daemon advertises.
-//   - callSession/callID: a fresh ephemeral identity, minted once at
-//     startup, used ONLY for call.invoke. callMu serializes access --
-//     two concurrent Invoke calls sharing this session's control
-//     stream would race each other exactly the same way, just between
-//     themselves instead of against ServeForever.
-//   - subSession/subID: a second fresh ephemeral identity, used ONLY
-//     for subscriptions. Every topic this daemon subscribes to shares
-//     this ONE session and ONE receive loop (runSubscriptionLoop),
-//     dispatching by (realm, topic) -- not one Session/loop per topic,
-//     which would just relocate the same race between subscriptions.
+// Server holds one Session to a station, under the daemon's own persisted
+// identity, and a dynamically-changing registry of procedures served on
+// it. The session carries everything at once: ServeForever answers
+// inbound CALLs, Invoke makes outbound calls, and every subscription
+// receives its events, concurrently, since macula-go's session reader
+// routes each frame to whoever is waiting for it. Every outbound call and
+// subscription is made as the daemon's own identity, the one "daemon
+// status" reports and a caller resolves, so a token minted for that
+// identity is accepted and a provider that checks its caller sees it.
 //
 // Registration and unregistration are ordinary mutex-guarded map
 // operations; connection.ServeForever's lookup/policy parameters are
@@ -70,21 +49,15 @@ type procKey struct {
 // ServeForever's goroutine runs is the entire mechanism -- no restart,
 // no second registration API on the SDK side.
 //
-// serveSession and subSession are atomic.Pointer, not plain fields:
-// each is read from multiple goroutines (Register/Unregister for
-// serveSession; ensureSubscription/Unsubscribe/the receive loop for
-// subSession) with no dedicated lock of their own, and each is now
-// REPLACED in place -- see runServeLoop/runSubscriptionLoop -- when
-// its underlying connection dies and reconnect() redials a fresh one,
-// so every reader needs a fresh Load() rather than a value captured
-// once. callSession stays a plain field: every access already goes
-// through callMu for the "one thing at a time" reason above, so
-// swapping it under that same lock needs no separate mechanism.
+// session is an atomic.Pointer: it is read from many goroutines
+// (Register, Unregister, Invoke, the subscriptions) and REPLACED in place
+// when the connection ends and runSession redials, so every reader takes a
+// fresh Load() rather than a value captured once.
 type Server struct {
-	serveSession atomic.Pointer[connection.Session]
-	id           identity.KeyPair
-	connectedTo  string // guarded by mu -- see setConnectedTo/Status
-	startedAt    time.Time
+	session     atomic.Pointer[connection.Session]
+	id          identity.KeyPair
+	connectedTo string // guarded by mu -- see setConnectedTo/Status
+	startedAt   time.Time
 
 	// connected/lastError are Status's own connectivity signal (2026-09-08,
 	// a real live gap: connectedTo above only ever reports the last
@@ -92,33 +65,23 @@ type Server struct {
 	// SUCCESSFUL (re)connect -- during an ongoing outage it silently kept
 	// reporting that stale address forever, indistinguishable from
 	// healthy to a supervisor or an operator running "daemon status").
-	// connected tracks the SERVE session specifically -- whether other
-	// mesh peers can reach this daemon at all -- not call/subscribe,
-	// which can drop independently (see setSessionError's own doc).
 	// Guarded by mu, same as connectedTo.
 	connected bool
 	lastError string
 
 	// logger is nil (silent) unless SetLogger was called -- same
 	// optional-setter shape as lazymesh's ringwaiter/roomwaiter
-	// SetLogger, guarded by its own mutex since it's read from every
-	// session's own goroutine. Destination is the caller's choice
-	// (daemon.go wires os.Stderr, not a file -- see its own comment on
-	// why that fits this codebase's foreground-plus-systemd convention
-	// better than inventing a log file/rotation scheme).
+	// SetLogger, guarded by its own mutex since it's read from several
+	// goroutines. Destination is the caller's choice (daemon.go wires
+	// os.Stderr, not a file -- see its own comment on why that fits this
+	// codebase's foreground-plus-systemd convention better than inventing
+	// a log file/rotation scheme).
 	loggerMu sync.Mutex
 	logger   *log.Logger
 
-	callSession *connection.Session
-	callID      identity.KeyPair
-	callMu      sync.Mutex
-
-	subSession atomic.Pointer[connection.Session]
-	subID      identity.KeyPair
-
-	// seeds is this daemon's current dial order, shared by every
-	// session's reconnect() call and mutated in place (a seed that
-	// just failed rotates toward the back) -- see reconnect's own doc.
+	// seeds is this daemon's current dial order, used by reconnect() and
+	// mutated in place (a seed that just failed rotates toward the back)
+	// -- see reconnect's own doc.
 	seeds   []connection.Seed
 	seedsMu sync.Mutex
 
@@ -146,50 +109,18 @@ type Server struct {
 	subDegraded map[topicKey]bool
 }
 
-// NewServer connects all three of a daemon's Sessions (see Server's
-// own doc) to the first reachable of seeds, using id for
-// serving/advertising and minting the two ephemeral calling/
-// subscribing identities itself. On any failure partway through,
-// everything already connected is closed before returning the error
-// -- no leaked Sessions on a failed startup.
+// NewServer connects the daemon's session, under id, to the first
+// reachable of seeds.
 func NewServer(ctx context.Context, seeds []connection.Seed, id identity.KeyPair) (*Server, error) {
-	serveSession, err := connection.ConnectSeeds(ctx, seeds, transport.WebPKI{}, id)
+	session, err := connection.ConnectSeeds(ctx, seeds, transport.WebPKI{}, id)
 	if err != nil {
-		return nil, fmt.Errorf("daemon: connect (serve session): %w", err)
+		return nil, fmt.Errorf("daemon: connect: %w", err)
 	}
-
-	callID, err := identity.Generate()
-	if err != nil {
-		_ = serveSession.Close("normal", nil, id)
-		return nil, fmt.Errorf("daemon: generate calling identity: %w", err)
-	}
-	callSession, err := connection.ConnectSeeds(ctx, seeds, transport.WebPKI{}, callID)
-	if err != nil {
-		_ = serveSession.Close("normal", nil, id)
-		return nil, fmt.Errorf("daemon: connect (call session): %w", err)
-	}
-
-	subID, err := identity.Generate()
-	if err != nil {
-		_ = serveSession.Close("normal", nil, id)
-		_ = callSession.Close("normal", nil, callID)
-		return nil, fmt.Errorf("daemon: generate subscribing identity: %w", err)
-	}
-	subSession, err := connection.ConnectSeeds(ctx, seeds, transport.WebPKI{}, subID)
-	if err != nil {
-		_ = serveSession.Close("normal", nil, id)
-		_ = callSession.Close("normal", nil, callID)
-		return nil, fmt.Errorf("daemon: connect (subscribe session): %w", err)
-	}
-
 	srv := &Server{
 		id:          id,
-		connectedTo: serveSession.RemoteAddr(),
+		connectedTo: session.RemoteAddr(),
 		connected:   true,
 		startedAt:   time.Now(),
-		callSession: callSession,
-		callID:      callID,
-		subID:       subID,
 		seeds:       append([]connection.Seed(nil), seeds...), // own copy -- reconnect mutates this, must not alias the caller's slice
 		handlers:    map[procKey]connection.CallHandler{},
 		policies:    map[procKey]ucan.Policy{},
@@ -197,20 +128,13 @@ func NewServer(ctx context.Context, seeds []connection.Seed, id identity.KeyPair
 		subs:        map[topicKey]*subscription{},
 		subDegraded: map[topicKey]bool{},
 	}
-	srv.serveSession.Store(serveSession)
-	srv.subSession.Store(subSession)
+	srv.session.Store(session)
 	return srv, nil
 }
 
-// Close closes every Session this daemon holds. Call after Run
-// returns.
+// Close closes the daemon's session. Call after Run returns.
 func (srv *Server) Close() {
-	_ = srv.serveSession.Load().Close("normal", nil, srv.id)
-	srv.callMu.Lock()
-	cs := srv.callSession
-	srv.callMu.Unlock()
-	_ = cs.Close("normal", nil, srv.callID)
-	_ = srv.subSession.Load().Close("normal", nil, srv.subID)
+	_ = srv.session.Load().Close("normal", nil, srv.id)
 }
 
 // respawnDelay mirrors the reference Erlang SDK's own
@@ -223,9 +147,8 @@ const respawnDelay = 1 * time.Second
 // the back first: the daemon just lost a connection dialed from
 // wherever srv.seeds currently starts, so deprioritizing that once
 // (rather than trying it first again immediately) is a simple,
-// good-enough policy -- srv.seeds is shared and updated by all three
-// of this daemon's sessions, so a seed that keeps failing sinks toward
-// the back over time regardless of which session noticed first.
+// good-enough policy -- srv.seeds is kept across reconnects, so a seed
+// that keeps failing sinks toward the back over time.
 // Returns (nil, false) only when ctx is done before any seed answered
 // -- i.e. the daemon is shutting down, not "give up after N tries".
 func (srv *Server) reconnect(ctx context.Context, trust transport.Trust, id identity.KeyPair) (*connection.Session, bool) {
@@ -289,52 +212,28 @@ func (srv *Server) log(format string, args ...any) {
 	}
 }
 
-// setSessionLost marks the SERVE session down (Status().Connected=false)
-// only when session=="serve" -- reachability by other mesh peers is
-// specifically what that field means (see StatusResult's own doc); a
-// call or subscribe session dying is real degradation too, but doesn't
-// change whether this daemon itself is reachable, so it's folded into
-// lastError only, not the boolean. Always logs and always records
-// lastError, regardless of which session, so an operator can see a
-// call/subscribe-only outage even though Connected stays true.
-//
-// Takes reason as a string, not an error: connection.Session.Done()
-// (the call session's own trigger, runCallSessionSupervisor) is a bare
-// channel with no accompanying error value in macula-go's API, unlike
-// ServeForever's own return -- a plain string covers both call sites
-// instead of runCallSessionSupervisor fabricating an error to satisfy a
-// signature that only ever needed to produce a log line.
-func (srv *Server) setSessionLost(session, reason string) {
+// setSessionLost marks the daemon's session down (Status().Connected is
+// false), records reason as Status().LastError and logs it.
+func (srv *Server) setSessionLost(reason string) {
 	srv.mu.Lock()
-	if session == "serve" {
-		srv.connected = false
-	}
-	srv.lastError = fmt.Sprintf("%s session: %s", session, reason)
+	srv.connected = false
+	srv.lastError = reason
 	srv.mu.Unlock()
-	srv.log("daemon: %s session lost, reconnecting: %s", session, reason)
+	srv.log("daemon: session lost, reconnecting: %s", reason)
 }
 
-// setSessionRecovered clears the connectivity signal set by
-// setSessionLost for session's own reconnect. Only clears
-// Connected/LastError when THIS session is the one lastError is
-// currently attributed to (prefix match against the "session: " tag
-// setSessionLost writes) -- a call-session recovery must not silently
-// clear a still-live serve-session outage's lastError, and vice versa.
-func (srv *Server) setSessionRecovered(session, addr string) {
+// setSessionRecovered clears what setSessionLost set, once the session is
+// back through addr.
+func (srv *Server) setSessionRecovered(addr string) {
 	srv.mu.Lock()
-	tag := session + " session:"
-	if len(srv.lastError) >= len(tag) && srv.lastError[:len(tag)] == tag {
-		srv.lastError = ""
-	}
-	if session == "serve" {
-		srv.connected = true
-	}
+	srv.connected = true
+	srv.lastError = ""
 	srv.mu.Unlock()
-	srv.log("daemon: %s session reconnected via %s", session, addr)
+	srv.log("daemon: session reconnected via %s", addr)
 }
 
 // replayAdvertisements re-sends ADVERTISE for every procedure this
-// daemon currently has registered onto a freshly (re)connected serve
+// daemon currently has registered onto a freshly (re)connected
 // session -- the direct analogue of the reference SDK's
 // macula_client_replay:advs_to/2. Best-effort: an error here means the
 // procedure silently isn't reachable through the new session yet, but
@@ -416,7 +315,7 @@ func (srv *Server) Register(p ServeRegisterParams) (ServeRegisterResult, error) 
 		policy = ucan.Required(issuer)
 	}
 
-	if err := srv.serveSession.Load().Advertise(frame.NewAdvertiseSpec(realm, p.Procedure, srv.id.NodeID()), srv.id); err != nil {
+	if err := srv.session.Load().Advertise(frame.NewAdvertiseSpec(realm, p.Procedure, srv.id.NodeID()), srv.id); err != nil {
 		return ServeRegisterResult{}, fmt.Errorf("advertise: %w", err)
 	}
 	if p.Direct {
@@ -439,42 +338,25 @@ func (srv *Server) Register(p ServeRegisterParams) (ServeRegisterResult, error) 
 }
 
 // publishDirectAdvertisement is the daemon's own version of
-// directdial.AdvertiseDirect / AdvertiseDirectWithCertChain, split across
-// two sessions on purpose. Those helpers do the plain Advertise AND the
-// DHT put_record on the ONE session they are handed; on a daemon that
-// session is serveSession, whose receive loop belongs to ServeForever,
-// so the put_record's RESULT frame was consumed there and every
-// `serve -daemon -direct` registration died with "dht: put_record:
-// connection: read stream: deadline exceeded" (seen live 2026-09-03 on
-// every attempt, while the one-shot `serve -direct`, with no
-// ServeForever running, worked) -- exactly the shared-control-stream
-// race the Server doc above explains callSession exists to avoid.
-//
-// So: the plain Advertise has already happened on serveSession (the
-// caller does it first, direct or not -- see AdvertiseDirect's own doc
-// on why both are required), the record names serveSession's station
-// as the server and is signed by srv.id (the identity a caller
-// resolves), and the put_record CALL rides callSession under callMu,
-// signed by callID like every other outbound call this daemon makes.
-// The station verifies the RECORD's signature against the advertiser
-// it names, not against whoever carried it.
+// directdial.AdvertiseDirect / AdvertiseDirectWithCertChain, for a
+// procedure the caller has already advertised on the daemon's session
+// (see AdvertiseDirect's own doc on why both are required): the record
+// names that session's station as the server, is signed by srv.id (the
+// identity a caller resolves), and is stored through the same session.
 func (srv *Server) publishDirectAdvertisement(realm []byte, procedure string, ttl time.Duration, certChainPEM string) error {
+	session := srv.session.Load()
 	uri := dht.DiscoveryURI(realm, procedure)
 	var rec dht.Record
 	var err error
 	if certChainPEM != "" {
-		rec, err = dht.NewProcedureAdvertisementWithCertChain(srv.id.NodeID(), uri, srv.serveSession.Load().Station.NodeID, ttl, []byte(certChainPEM))
+		rec, err = dht.NewProcedureAdvertisementWithCertChain(srv.id.NodeID(), uri, session.Station.NodeID, ttl, []byte(certChainPEM))
 	} else {
-		rec, err = dht.NewProcedureAdvertisement(srv.id.NodeID(), uri, srv.serveSession.Load().Station.NodeID, ttl)
+		rec, err = dht.NewProcedureAdvertisement(srv.id.NodeID(), uri, session.Station.NodeID, ttl)
 	}
 	if err != nil {
 		return fmt.Errorf("advertise (direct): %w", err)
 	}
-	rec = dht.Sign(rec, srv.id)
-
-	srv.callMu.Lock()
-	defer srv.callMu.Unlock()
-	if err := dht.PutRecord(srv.callSession, srv.callID, rec); err != nil {
+	if err := dht.PutRecord(session, srv.id, dht.Sign(rec, srv.id)); err != nil {
 		return fmt.Errorf("advertise (direct): %w", err)
 	}
 	return nil
@@ -507,7 +389,7 @@ func (srv *Server) Unregister(p ServeUnregisterParams) (ServeUnregisterResult, e
 	srv.mu.Unlock()
 
 	if existed {
-		if err := srv.serveSession.Load().Unadvertise(frame.NewUnadvertiseSpec(realm, p.Procedure, srv.id.NodeID()), srv.id); err != nil {
+		if err := srv.session.Load().Unadvertise(frame.NewUnadvertiseSpec(realm, p.Procedure, srv.id.NodeID()), srv.id); err != nil {
 			// Not restored to handlers/order/degraded above -- the
 			// operator asked to stop serving this and that local intent
 			// already took effect regardless of whether the mesh-facing
@@ -562,12 +444,10 @@ type wireCallError struct {
 
 func (e *wireCallError) Error() string { return e.message }
 
-// Invoke routes one unary RPC call through srv.callSession instead of
-// a caller dialing the mesh itself -- the daemon-mode counterpart to
-// the one-shot "call" subcommand's plain (non-direct) path. callMu
-// serializes this against any other concurrent Invoke: callSession is
-// dedicated to calling (see Server's own doc), but its control stream
-// still only tolerates one waiter at a time.
+// Invoke makes one unary RPC call on the daemon's session, as the daemon's
+// own identity, instead of a caller dialing the mesh itself -- the
+// daemon-mode counterpart to the one-shot "call" subcommand's plain
+// (non-direct) path. Calls run concurrently.
 func (srv *Server) Invoke(p CallInvokeParams) (CallInvokeResult, error) {
 	realm, err := parseRealmHex(p.RealmHex)
 	if err != nil {
@@ -586,9 +466,7 @@ func (srv *Server) Invoke(p CallInvokeParams) (CallInvokeResult, error) {
 	}
 	deadlineMs := time.Now().Add(timeout).UnixMilli()
 
-	srv.callMu.Lock()
-	defer srv.callMu.Unlock()
-
+	session := srv.session.Load()
 	start := time.Now()
 	var resp frame.CallResponse
 	if p.UcanTokenHex != "" {
@@ -596,9 +474,9 @@ func (srv *Server) Invoke(p CallInvokeParams) (CallInvokeResult, error) {
 		if decErr != nil {
 			return CallInvokeResult{}, fmt.Errorf("ucan_token_hex: invalid hex: %w", decErr)
 		}
-		resp, err = srv.callSession.CallWithUCAN(p.Procedure, realm, payload, deadlineMs, srv.callID, timeout, token)
+		resp, err = session.CallWithUCAN(p.Procedure, realm, payload, deadlineMs, srv.id, timeout, token)
 	} else {
-		resp, err = srv.callSession.Call(p.Procedure, realm, payload, deadlineMs, srv.callID, timeout)
+		resp, err = session.Call(p.Procedure, realm, payload, deadlineMs, srv.id, timeout)
 	}
 	duration := time.Since(start).Milliseconds()
 	if err != nil {
@@ -637,75 +515,50 @@ func (srv *Server) Shutdown() {
 	}
 }
 
-// runServeLoop wraps ServeForever with reconnect + replay: on a real
-// connection failure (ServeForever returning while ctx is still live),
-// it redials the seed pool and re-Advertises every currently-
-// registered procedure onto the fresh session before resuming --
-// mirroring the reference SDK's respawn_link + advs_to. Only returns
-// once ctx itself is done (either directly, or because reconnect gave
-// up waiting for a seed to answer after ctx was cancelled) -- ordinary
-// station churn never ends this loop on its own.
-func (srv *Server) runServeLoop(ctx context.Context) error {
+// runSession serves inbound CALLs on the daemon's session for as long as
+// ctx is not done. When the session ends -- its Done closes, with the
+// reason in its Err -- it redials the seed pool and replays every
+// registered procedure and every subscription onto the fresh session
+// before serving again, mirroring the reference SDK's respawn_link +
+// advs_to + subs_to. ServeForever stopping while the session is still up
+// (a reply it could not send) just serves again on the same session. Only
+// returns once ctx itself is done, ending every subscription on its way
+// out -- ordinary station churn never ends this loop on its own.
+func (srv *Server) runSession(ctx context.Context) error {
+	defer srv.closeAllSubscriptions()
 	for {
-		// ServeForever's return is captured now (2026-09-08 -- see
-		// setSessionLost's own doc on why this matters): it's either
-		// ctx.Err() (checked below, a clean shutdown) or a real link
-		// failure, and the failure case's actual reason is worth
-		// logging even though reconnect() itself needs nothing more
-		// from it than "it returned."
-		serveErr := srv.serveSession.Load().ServeForever(ctx, srv.lookup, srv.policy, srv.id)
+		sess := srv.session.Load()
+		serveErr := sess.ServeForever(ctx, srv.lookup, srv.policy, srv.id)
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		reason := "serve loop ended"
-		if serveErr != nil {
-			reason = serveErr.Error()
+		select {
+		case <-sess.Done():
+		default:
+			srv.log("daemon: serving stopped on a live session, serving again: %v", serveErr)
+			continue
 		}
-		srv.setSessionLost("serve", reason)
+		srv.setSessionLost(sessionEndReason(sess))
 		fresh, ok := srv.reconnect(ctx, transport.WebPKI{}, srv.id)
 		if !ok {
 			return ctx.Err()
 		}
-		srv.serveSession.Store(fresh)
+		srv.session.Store(fresh)
 		srv.setConnectedTo(fresh.RemoteAddr())
-		srv.setSessionRecovered("serve", fresh.RemoteAddr())
+		srv.setSessionRecovered(fresh.RemoteAddr())
 		srv.replayAdvertisements(fresh)
+		srv.replaySubscriptions(fresh)
 	}
 }
 
-// runCallSessionSupervisor watches the call session's Done() and
-// redials it in place when it fires. Unlike serve/sub, the call
-// session holds no standing state to replay -- Invoke is a
-// synchronous per-call operation, not a loop -- so reconnecting here
-// only means "make the next Invoke work again", under the same callMu
-// every Invoke already takes.
-func (srv *Server) runCallSessionSupervisor(ctx context.Context) {
-	for {
-		srv.callMu.Lock()
-		done := srv.callSession.Done()
-		srv.callMu.Unlock()
-
-		select {
-		case <-ctx.Done():
-			return
-		case <-done:
-		}
-		if ctx.Err() != nil {
-			return
-		}
-
-		srv.setSessionLost("call", "connection closed")
-		fresh, ok := srv.reconnect(ctx, transport.WebPKI{}, srv.callID)
-		if !ok {
-			return
-		}
-		srv.callMu.Lock()
-		srv.callSession = fresh
-		srv.callMu.Unlock()
-		srv.setConnectedTo(fresh.RemoteAddr())
-		srv.setSessionRecovered("call", fresh.RemoteAddr())
+// sessionEndReason is why sess ended, as its Err reports it.
+func sessionEndReason(sess *connection.Session) string {
+	if err := sess.Err(); err != nil {
+		return err.Error()
 	}
+	return "connection closed"
 }
+
 
 // Run answers inbound mesh CALLs against the dynamic registry AND
 // serves the control socket at socketPath, until parentCtx is done or
@@ -728,10 +581,7 @@ func (srv *Server) Run(parentCtx context.Context, socketPath string) error {
 	}()
 
 	serveErrCh := make(chan error, 1)
-	go func() { serveErrCh <- srv.runServeLoop(ctx) }()
-
-	go srv.runSubscriptionSupervisor(ctx)
-	go srv.runCallSessionSupervisor(ctx)
+	go func() { serveErrCh <- srv.runSession(ctx) }()
 
 	acceptErrCh := make(chan error, 1)
 	go func() { acceptErrCh <- srv.acceptLoop(ctx, ln) }()
@@ -746,7 +596,7 @@ func (srv *Server) Run(parentCtx context.Context, socketPath string) error {
 		}
 		return ctx.Err()
 	case <-serveErrCh:
-		// runServeLoop only ever returns once ctx itself is done --
+		// runSession only ever returns once ctx itself is done --
 		// transient link failures are handled internally via
 		// reconnect+replay, so this is the same shutdown as the
 		// ctx.Done() case above, just observed via the other channel

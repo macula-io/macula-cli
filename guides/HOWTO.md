@@ -618,19 +618,14 @@ this was tightened live after being asked directly whether the fallback
 path was safe on a shared, multi-user Linux box (it wasn't, as first
 shipped; it is now).
 
-**Three Sessions, not one** — also load-bearing, also found live. A daemon
-connects three times: one Session (the real, persisted identity) owns
-serving and every advertisement; a second, ephemeral-identity Session is
-dedicated to `call -via-daemon`; a third, separately ephemeral, is
-dedicated to every `pubsub subscribe`d topic. A first draft sharing one
-Session for everything hit macula-go's documented "control stream is
-one thing at a time" limitation directly: answering inbound calls while
-also making an outbound one intermittently stole the reply meant for the
-outbound caller (`connection: read stream: deadline exceeded`, non-
-deterministically, only under real concurrent load — see the README for
-the full writeup). Splitting by concern removed it; ten `call -via-daemon`
-calls back to back plus three fired concurrently against a live publish all
-came back correct once fixed.
+**One Session, under the daemon's own identity.** A daemon connects once:
+that Session serves every registered procedure, makes every
+`call -via-daemon` call and carries every `pubsub subscribe`d topic at the
+same time, since macula-go routes each reply, event and inbound CALL on a
+Session to whoever is waiting for it. Every outgoing call and subscription
+is made as the daemon's own persisted identity, so a token minted for that
+identity is accepted (see the README's "One Session, under the daemon's own
+identity").
 
 ### `serve -daemon`
 
@@ -706,8 +701,8 @@ $ macula-cli call --json station-de-frankfurt.macula.io:4433 macula_cli.exec_smo
 {"procedure":"macula_cli.exec_smoke_test","payload":{"doubled":-14,"received":-7},"duration_ms":55}
 ```
 
-**Every procedure a daemon serves shares one `serveSession`** (see the
-README's "Three Sessions, not one") — a hung `-exec` would block every
+**Every procedure a daemon serves is answered by one serve loop, one call
+at a time**, so a hung `-exec` would block every
 OTHER registered procedure too, not just its own, so `-exec-timeout`
 (10s default) kills it. A non-zero exit or invalid JSON on stdout are
 treated the same way: all three become a normal ERROR reply to the

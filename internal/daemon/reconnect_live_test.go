@@ -14,6 +14,7 @@ import (
 
 	"github.com/macula-io/macula-go/cbor"
 	"github.com/macula-io/macula-go/connection"
+	"github.com/macula-io/macula-go/frame"
 	"github.com/macula-io/macula-go/identity"
 	"github.com/macula-io/macula-go/transport"
 )
@@ -48,7 +49,7 @@ func TestLiveDaemonStartFallsThroughDeadSeed(t *testing.T) {
 }
 
 // TestLiveDaemonReconnectsAndReplaysAdvertisement pins the actual
-// point of this whole feature: a daemon whose serve session dies keeps
+// point of this whole feature: a daemon whose session dies keeps
 // serving the same procedure afterward, without anything re-running
 // "serve" by hand. Runs against a single real seed (MACULA_LIVE_STATION,
 // default station-de-frankfurt) -- redialing the SAME station after a
@@ -72,7 +73,7 @@ func TestLiveDaemonReconnectsAndReplaysAdvertisement(t *testing.T) {
 
 	serveCtx, stopServing := context.WithCancel(ctx)
 	defer stopServing()
-	go func() { _ = srv.runServeLoop(serveCtx) }()
+	go func() { _ = srv.runSession(serveCtx) }()
 	time.Sleep(500 * time.Millisecond)
 
 	var suffix [6]byte
@@ -103,22 +104,22 @@ func TestLiveDaemonReconnectsAndReplaysAdvertisement(t *testing.T) {
 	}
 
 	// Force the exact failure mode reconnect exists for: the connection
-	// is gone, out from under runServeLoop, with no warning -- Close
+	// is gone, out from under runSession, with no warning -- Close
 	// sends GOODBYE and tears down the underlying QUIC connection,
 	// which is exactly what Session.Done() fires on (see macula-go's
 	// own doc), indistinguishable from a real station-side drop from
 	// this daemon's point of view.
-	dead := srv.serveSession.Load()
+	dead := srv.session.Load()
 	if err := dead.Close("normal", nil, srv.id); err != nil {
 		t.Logf("forced Close returned an error (expected, connection is being torn down): %v", err)
 	}
 
-	// Give runServeLoop room to notice, redial (respawnDelay + a real
+	// Give runSession room to notice, redial (respawnDelay + a real
 	// handshake), and replay the advertisement.
 	deadline := time.Now().Add(30 * time.Second)
 	var lastErr error
 	for time.Now().Before(deadline) {
-		if srv.serveSession.Load() == dead {
+		if srv.session.Load() == dead {
 			time.Sleep(500 * time.Millisecond)
 			continue // hasn't swapped in a fresh session yet
 		}
@@ -135,7 +136,7 @@ func TestLiveDaemonReconnectsAndReplaysAdvertisement(t *testing.T) {
 // whole feature exists to satisfy: not just "does the underlying
 // reconnect logic run" (the test above already proved that), but "does
 // Status() -- what an operator or a supervisor actually SEES -- reflect
-// reality during the outage, not just after it's over." Kills the serve
+// reality during the outage, not just after it's over." Kills the
 // session the exact same way TestLiveDaemonReconnectsAndReplaysAdvertisement
 // does (Close(), indistinguishable from a real station-side drop), then
 // asserts Connected/LastError go bad WHILE the daemon is mid-reconnect
@@ -162,14 +163,14 @@ func TestLiveDaemonStatusReflectsConnectionLoss(t *testing.T) {
 
 	serveCtx, stopServing := context.WithCancel(ctx)
 	defer stopServing()
-	go func() { _ = srv.runServeLoop(serveCtx) }()
+	go func() { _ = srv.runSession(serveCtx) }()
 	time.Sleep(500 * time.Millisecond)
 
 	if got := srv.Status(); !got.Connected || got.LastError != "" {
 		t.Fatalf("expected a healthy baseline status before forcing anything, got Connected=%v LastError=%q", got.Connected, got.LastError)
 	}
 
-	dead := srv.serveSession.Load()
+	dead := srv.session.Load()
 	if err := dead.Close("normal", nil, srv.id); err != nil {
 		t.Logf("forced Close returned an error (expected, connection is being torn down): %v", err)
 	}
@@ -187,9 +188,6 @@ func TestLiveDaemonStatusReflectsConnectionLoss(t *testing.T) {
 			if got.LastError == "" {
 				t.Fatalf("expected LastError populated while Connected=false, got empty")
 			}
-			if !strings.HasPrefix(got.LastError, "serve session:") {
-				t.Fatalf("expected LastError tagged as the serve session's own, got %q", got.LastError)
-			}
 			break
 		}
 		time.Sleep(20 * time.Millisecond)
@@ -197,7 +195,7 @@ func TestLiveDaemonStatusReflectsConnectionLoss(t *testing.T) {
 	if !sawDisconnected {
 		t.Fatalf("never observed Status().Connected go false during the forced outage -- either the kill didn't take, or Status isn't reflecting it in real time")
 	}
-	if !strings.Contains(logBuf.String(), "serve session lost") {
+	if !strings.Contains(logBuf.String(), "session lost") {
 		t.Fatalf("expected a logged connection-lost line, got:\n%s", logBuf.String())
 	}
 
@@ -212,4 +210,100 @@ func TestLiveDaemonStatusReflectsConnectionLoss(t *testing.T) {
 		time.Sleep(500 * time.Millisecond)
 	}
 	t.Fatalf("Status() never returned to Connected=true/LastError=\"\" after the forced reconnect")
+}
+
+// TestLiveDaemonAfterAForcedReconnectItsAdvertisementsAndSubscriptionsWorkAgain
+// proves the daemon's one reconnect path restores everything its session
+// carries: once the session is gone, a registered procedure answers again
+// and a watched subscription delivers events again, with nothing re-run by
+// hand. `go test -tags live -run AfterAForcedReconnect ./internal/daemon`.
+func TestLiveDaemonAfterAForcedReconnectItsAdvertisementsAndSubscriptionsWorkAgain(t *testing.T) {
+	host, port := liveStation(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Second)
+	defer cancel()
+
+	id := mustGenerate(t, "daemon")
+	srv, err := NewServer(ctx, []connection.Seed{{Host: host, Port: port}}, id)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	defer srv.Close()
+	runCtx, stop := context.WithCancel(ctx)
+	defer stop()
+	go func() { _ = srv.runSession(runCtx) }()
+	time.Sleep(500 * time.Millisecond)
+
+	var suffix [6]byte
+	if _, err := rand.Read(suffix[:]); err != nil {
+		t.Fatalf("rand: %v", err)
+	}
+	name := "daemon.reconnect.live." + hex.EncodeToString(suffix[:])
+	procedure, topic := name+".probe", name+".events"
+	realm := make([]byte, 32)
+	if _, err := srv.Register(ServeRegisterParams{Procedure: procedure, Reply: []byte(`{"ok":1}`)}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	events := make(chan PubsubEventNotification, 64)
+	unwatch, err := srv.watch(realm, topic, events)
+	if err != nil {
+		t.Fatalf("watch: %v", err)
+	}
+	defer unwatch()
+
+	callerID := mustGenerate(t, "caller")
+	caller, err := connection.Connect(ctx, host, port, transport.WebPKI{}, callerID)
+	if err != nil {
+		t.Fatalf("Connect (caller): %v", err)
+	}
+	defer func() { _ = caller.Close("normal", nil, callerID) }()
+
+	seq := uint64(time.Now().UnixMicro())
+	works := func(stage string) {
+		t.Helper()
+		deadline := time.Now().Add(40 * time.Second)
+		for {
+			_, callErr := caller.Call(procedure, realm, cbor.Null(), time.Now().Add(10*time.Second).UnixMilli(), callerID, 10*time.Second)
+			if callErr == nil {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("%s: the registered procedure never answered: %v", stage, callErr)
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
+		for {
+			seq++
+			spec := frame.NewPublishSpec(topic, realm, callerID.NodeID(), seq, cbor.Text(stage), time.Now().UnixMilli())
+			if err := caller.Publish(spec, callerID); err != nil {
+				t.Fatalf("%s: Publish: %v", stage, err)
+			}
+			select {
+			case evt, ok := <-events:
+				if !ok {
+					t.Fatalf("%s: the daemon ended the subscription", stage)
+				}
+				if got, _ := evt.Payload.(string); got == stage {
+					return
+				}
+			case <-time.After(time.Second):
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("%s: the watched subscription never delivered an event", stage)
+			}
+		}
+	}
+
+	works("before the reconnect")
+	dead := srv.session.Load()
+	if err := dead.Close("normal", nil, srv.id); err != nil {
+		t.Logf("forced Close returned an error (expected, connection is being torn down): %v", err)
+	}
+	deadline := time.Now().Add(30 * time.Second)
+	for srv.session.Load() == dead {
+		if time.Now().After(deadline) {
+			t.Fatal("the daemon never replaced its closed session")
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	works("after the reconnect")
 }

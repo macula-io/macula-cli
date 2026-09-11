@@ -46,7 +46,7 @@ func TestLiveRegisterDirect_PublishesResolvableRecordWhileServing(t *testing.T) 
 	// way Run starts it, minus the control socket this test has no use for.
 	serveCtx, stopServing := context.WithCancel(ctx)
 	defer stopServing()
-	go func() { _ = srv.serveSession.Load().ServeForever(serveCtx, srv.lookup, srv.policy, srv.id) }()
+	go func() { _ = srv.session.Load().ServeForever(serveCtx, srv.lookup, srv.policy, srv.id) }()
 	time.Sleep(500 * time.Millisecond)
 
 	var suffix [6]byte
@@ -79,8 +79,8 @@ func TestLiveRegisterDirect_PublishesResolvableRecordWhileServing(t *testing.T) 
 	for attempt := 0; attempt < 10; attempt++ {
 		station, _, _, rerr := directdial.Resolve(ctx, resolver, other, realm, procedure)
 		if rerr == nil {
-			if hex.EncodeToString(station) != hex.EncodeToString(srv.serveSession.Load().Station.NodeID) {
-				t.Fatalf("resolved station %x, daemon serves on %x", station, srv.serveSession.Load().Station.NodeID)
+			if hex.EncodeToString(station) != hex.EncodeToString(srv.session.Load().Station.NodeID) {
+				t.Fatalf("resolved station %x, daemon serves on %x", station, srv.session.Load().Station.NodeID)
 			}
 			return
 		}

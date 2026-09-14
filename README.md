@@ -257,7 +257,8 @@ macula-cli serve -daemon -reply '{"pong":1}' my.echo
 # the script gets the call's JSON payload on stdin, its stdout becomes
 # the reply. A non-zero exit, a timeout, or invalid JSON on stdout all
 # become a normal ERROR reply to the caller, not a crash of the daemon
-# or any other procedure it's serving.
+# or any other procedure it's serving. A map payload carries the caller
+# the daemon verified, as "caller".
 macula-cli serve -daemon -exec './double.sh' my.double
 
 # From anywhere else: ordinary "call" reaches it exactly like any other
@@ -380,7 +381,9 @@ other way to hand a registration a live answer. `-exec` runs the given
 shell command once per inbound CALL (`sh -c` on Linux/macOS, `cmd /C` on
 Windows), writing the payload as one JSON document to its stdin and
 reading its entire stdout back as the reply (empty stdout replies
-`null`). Every procedure a daemon serves is answered by one serve loop,
+`null`). A map payload carries the caller the daemon's session verified
+under `"caller"`, as `0x` hex, in place of any `"caller"` the sender
+put there. Every procedure a daemon serves is answered by one serve loop,
 one call at a time, so a hung exec would block every
 OTHER registered procedure too, not just its own, so `-exec-timeout`
 (10s default) kills it and turns the call into a normal ERROR reply

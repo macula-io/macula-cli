@@ -682,7 +682,9 @@ macula-cli serve -daemon -exec '<shell command>' [-exec-timeout <duration>] <pro
 registration time. `-exec` is the one registration mode that computes a
 reply PER CALL: the given shell command runs once per inbound CALL, gets
 the call's payload as one JSON document on stdin, and whatever it writes
-to stdout becomes the reply (empty stdout replies `null`). Cannot be
+to stdout becomes the reply (empty stdout replies `null`). A map payload
+carries the caller the daemon's session verified under `"caller"`, as
+`0x` hex, in place of any `"caller"` the sender put there. Cannot be
 combined with `-reply`/`-echo` — rejected at parse time, before ever
 registering anything:
 

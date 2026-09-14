@@ -189,6 +189,10 @@ github.com/macula-io/macula-cli/cmd/macula-cli@latest` works too.
 macula-cli connect station-de-frankfurt.macula.io
 ```
 
+The public stations have IPv6 addresses only, so `macula-cli` needs a network with
+a working IPv6 route and outbound UDP to port 4433 (QUIC). On an IPv4-only network
+the dial fails with `network is unreachable`.
+
 To remove it again: `curl -fsSL .../uninstall.sh | bash` (or
 `irm .../uninstall.ps1 | iex` on Windows) — same repo path, `uninstall.sh`/
 `uninstall.ps1` instead of `install`. Leaves the persisted identity alone

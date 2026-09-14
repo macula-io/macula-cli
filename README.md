@@ -287,6 +287,15 @@ is made as the daemon's own persisted identity, the one `daemon status`
 reports, so a token minted for that identity (an audience-bound UCAN) is
 accepted and a provider that checks its caller sees that identity.
 
+**The control socket has no authentication of its own.** Like `ssh-agent`,
+it relies on the operating system: the socket lives in a directory only its
+owner can use, so anything running as that same user can call, serve and
+subscribe as the daemon's identity through it. Run the daemon as a user that
+only trusted processes run as. On Windows that directory check does nothing
+and relies on `%TEMP%` being under the user's own profile, so a daemon run as
+a service with a shared `TEMP` needs its `-socket` in a directory only that
+service account can reach.
+
 **Resilience: multi-seed dial and reconnect.** `call`, `pubsub publish`,
 `pubsub watch`, `dht find-*`, `serve`, and `daemon start` all accept a
 repeatable `-seed host[:port]` flag: additional stations tried, in order,

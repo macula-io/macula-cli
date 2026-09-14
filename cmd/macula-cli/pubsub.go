@@ -158,6 +158,8 @@ func runPubsubWatch(args []string) int {
 			"to actually end it. Takes no <host[:port]> (the daemon already has one), and\n"+
 			"-count/-duration/Ctrl-C stop only THIS command's own tap, not the\n"+
 			"subscription.\n\n"+
+			"Without -daemon, a watch that falls behind the events arriving exits with\n"+
+			"an error; a daemon's own subscription is replaced instead and keeps running.\n\n"+
 			"With -seed (non-daemon mode only), falls back to additional stations in\n"+
 			"order if <host> doesn't answer.\n\nFlags:\n")
 		fs.PrintDefaults()

@@ -105,6 +105,15 @@ same machine. Re-confirmed this exact failure shape live again on
 2026-08-30 while testing daemon mode's own `pubsub watch`/`publish` pair —
 it's the identity collision every time, not a regression.
 
+**A one-shot command under the daemon's identity ends the daemon's
+connection.** A running daemon and every one-shot command load the same
+persisted identity unless given another `--identity`. When a one-shot
+command connects under it, the station closes the daemon's connection: the
+daemon's calls, subscriptions and served procedures all drop until it
+reconnects, and that reconnect in turn closes a long-running one-shot such
+as `pubsub watch`. While a daemon runs, give one-shot commands their own
+`--identity`, or go through the daemon (`-daemon`, `-via-daemon`).
+
 ---
 
 ## 2. `connect` — staged handshake diagnostic

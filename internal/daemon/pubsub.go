@@ -36,13 +36,26 @@ type subscription struct {
 	watchers map[chan PubsubEventNotification]struct{}
 	live     *connection.Subscription
 	ended    bool
+
+	// ready is closed once the SUBSCRIBE that created this subscription has
+	// been written, or has failed with err. A subscription made any other
+	// way has no ready channel, and never waits.
+	ready chan struct{}
+	err   error
 }
 
 // subscriptionPollInterval bounds one Subscription.Recv wait. Not a wire
 // timeout: a forwarder simply waits again.
 const subscriptionPollInterval = 2 * time.Second
 
-
+// subscribe issues spec's SUBSCRIBE on sess as the daemon's identity, through
+// subscribeOn when a test has set it.
+func (srv *Server) subscribe(sess *connection.Session, spec frame.SubscribeSpec) (*connection.Subscription, error) {
+	if srv.subscribeOn != nil {
+		return srv.subscribeOn(sess, spec, srv.id)
+	}
+	return sess.Subscribe(spec, srv.id)
+}
 
 // replaySubscriptions subscribes every topic this daemon tracks on a
 // freshly (re)connected session -- the pub/sub analogue of
@@ -58,19 +71,27 @@ func (srv *Server) replaySubscriptions(sess *connection.Session) {
 	}
 	srv.subsMu.Unlock()
 	for k, sub := range tracked {
-		realm, err := hex.DecodeString(k.realmHex)
-		if err != nil {
-			continue
-		}
-		live, subErr := sess.Subscribe(frame.NewSubscribeSpec(k.topic, realm, srv.id.NodeID()), srv.id)
-		srv.setSubscriptionDegraded(k, sub, subErr != nil)
-		if subErr != nil {
-			srv.log("daemon: re-subscribe %s (realm %s) after reconnect failed, still tracked but not receiving events until the next successful replay: %v", k.topic, k.realmHex, subErr)
-			continue
-		}
-		if sub.follow(live) {
-			go srv.forwardEvents(k, sub, live)
-		}
+		srv.replaySubscription(sess, k, sub)
+	}
+}
+
+// replaySubscription subscribes k again on sess for sub. A subscription whose
+// first SUBSCRIBE is still in flight is waited for first, since that SUBSCRIBE
+// may have gone out on the session this replay replaces; one that has ended
+// meanwhile is left alone.
+func (srv *Server) replaySubscription(sess *connection.Session, k topicKey, sub *subscription) {
+	realm, err := hex.DecodeString(k.realmHex)
+	if err != nil || sub.waitReady() != nil || sub.isEnded() {
+		return
+	}
+	live, subErr := srv.subscribe(sess, frame.NewSubscribeSpec(k.topic, realm, srv.id.NodeID()))
+	srv.setSubscriptionDegraded(k, sub, subErr != nil)
+	if subErr != nil {
+		srv.log("daemon: re-subscribe %s (realm %s) after reconnect failed, still tracked but not receiving events until the next successful replay: %v", k.topic, k.realmHex, subErr)
+		return
+	}
+	if sub.follow(live) {
+		go srv.forwardEvents(k, sub, live)
 	}
 }
 
@@ -118,7 +139,7 @@ func (srv *Server) replaceOverflowed(k topicKey, sub *subscription, live *connec
 		_ = live.Close()
 		return nil, false
 	}
-	next, subErr := srv.session.Load().Subscribe(frame.NewSubscribeSpec(k.topic, realm, srv.id.NodeID()), srv.id)
+	next, subErr := srv.subscribe(srv.session.Load(), frame.NewSubscribeSpec(k.topic, realm, srv.id.NodeID()))
 	if subErr != nil {
 		_ = live.Close()
 		srv.setSubscriptionDegraded(k, sub, true)
@@ -164,6 +185,22 @@ func (sub *subscription) swap(prev, next *connection.Subscription) bool {
 	}
 	sub.live = next
 	return true
+}
+
+// waitReady waits for the SUBSCRIBE that created sub, when it is still in
+// flight, and returns that SUBSCRIBE's error.
+func (sub *subscription) waitReady() error {
+	if sub.ready != nil {
+		<-sub.ready
+	}
+	return sub.err
+}
+
+// isEnded reports whether sub has ended.
+func (sub *subscription) isEnded() bool {
+	sub.mu.Lock()
+	defer sub.mu.Unlock()
+	return sub.ended
 }
 
 // deliver hands out to every watcher without waiting on any of them.
@@ -241,23 +278,63 @@ func (srv *Server) closeAllSubscriptions() {
 
 // ensureSubscription creates (realm, topic)'s subscription -- issuing
 // the actual wire SUBSCRIBE on the daemon's session -- the first time it's
-// asked for, and just returns the existing one on every call after.
+// asked for, and returns the existing one on every call after. The SUBSCRIBE
+// is written outside subsMu, so a write that stalls holds up no unsubscribe,
+// replay or status report; a request that arrives while it is in flight waits
+// for its outcome instead of writing a second one.
 func (srv *Server) ensureSubscription(realm []byte, topic string) (*subscription, error) {
 	key := topicKey{hex.EncodeToString(realm), topic}
+	sub, claimed := srv.claimSubscription(key)
+	if claimed {
+		srv.subscribeClaimed(key, sub, realm, topic)
+	}
+	if err := sub.waitReady(); err != nil {
+		return nil, err
+	}
+	return sub, nil
+}
+
+// claimSubscription returns key's subscription, first creating one that has
+// yet to subscribe when there is none, and reports whether it did.
+func (srv *Server) claimSubscription(key topicKey) (*subscription, bool) {
 	srv.subsMu.Lock()
 	defer srv.subsMu.Unlock()
 	if sub, ok := srv.subs[key]; ok {
-		return sub, nil
+		return sub, false
 	}
-	live, err := srv.session.Load().Subscribe(frame.NewSubscribeSpec(topic, realm, srv.id.NodeID()), srv.id)
-	if err != nil {
-		return nil, fmt.Errorf("subscribe: %w", err)
-	}
-	sub := &subscription{watchers: map[chan PubsubEventNotification]struct{}{}, live: live}
+	sub := &subscription{watchers: map[chan PubsubEventNotification]struct{}{}, ready: make(chan struct{})}
 	srv.subs[key] = sub
-	delete(srv.subDegraded, key) // the Subscribe just above already succeeded, or this function would have returned its error instead
-	go srv.forwardEvents(key, sub, live)
-	return sub, nil
+	return sub, true
+}
+
+// subscribeClaimed writes the SUBSCRIBE for sub, which claimSubscription just
+// created for key, and starts forwarding its events. A failed SUBSCRIBE drops
+// the claim, so the next request tries again. Either way, every request
+// waiting on sub learns the outcome when this returns.
+func (srv *Server) subscribeClaimed(key topicKey, sub *subscription, realm []byte, topic string) {
+	defer close(sub.ready)
+	live, err := srv.subscribe(srv.session.Load(), frame.NewSubscribeSpec(topic, realm, srv.id.NodeID()))
+	if err != nil {
+		sub.err = fmt.Errorf("subscribe: %w", err)
+		srv.forgetSubscription(key, sub)
+		return
+	}
+	if sub.follow(live) {
+		srv.setSubscriptionDegraded(key, sub, false)
+		go srv.forwardEvents(key, sub, live)
+	}
+}
+
+// forgetSubscription stops tracking sub under key, as long as sub is still the
+// subscription tracked there, and ends it.
+func (srv *Server) forgetSubscription(key topicKey, sub *subscription) {
+	srv.subsMu.Lock()
+	if srv.subs[key] == sub {
+		delete(srv.subs, key)
+		delete(srv.subDegraded, key)
+	}
+	srv.subsMu.Unlock()
+	_ = sub.end()
 }
 
 // Subscribe creates (or confirms) a durable subscription to

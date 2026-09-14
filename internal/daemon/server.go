@@ -107,6 +107,10 @@ type Server struct {
 	// subDegraded is degraded's counterpart for subscriptions -- see its
 	// own doc above. Guarded by subsMu, same as subs.
 	subDegraded map[topicKey]bool
+
+	// subscribeOn issues a SUBSCRIBE in place of Session.Subscribe when set.
+	// Only tests set it, to stand in for a station.
+	subscribeOn func(*connection.Session, frame.SubscribeSpec, identity.KeyPair) (*connection.Subscription, error)
 }
 
 // NewServer connects the daemon's session, under id, to the first
@@ -558,7 +562,6 @@ func sessionEndReason(sess *connection.Session) string {
 	}
 	return "connection closed"
 }
-
 
 // Run answers inbound mesh CALLs against the dynamic registry AND
 // serves the control socket at socketPath, until parentCtx is done or

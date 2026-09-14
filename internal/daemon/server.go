@@ -110,7 +110,11 @@ type Server struct {
 
 	// subscribeOn issues a SUBSCRIBE in place of Session.Subscribe when set.
 	// Only tests set it, to stand in for a station.
-	subscribeOn func(*connection.Session, frame.SubscribeSpec, identity.KeyPair) (*connection.Subscription, error)
+	subscribeOn func(*connection.Session, frame.SubscribeSpec, identity.KeyPair) (liveSubscription, error)
+	// sharedSubscription, when a test sets it, is called with the topic of each
+	// request that finds its subscription already claimed, just before the
+	// request waits for that subscription's first SUBSCRIBE.
+	sharedSubscription func(topic string)
 }
 
 // NewServer connects the daemon's session, under id, to the first

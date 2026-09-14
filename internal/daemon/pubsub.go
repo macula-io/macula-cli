@@ -23,6 +23,13 @@ type topicKey struct {
 	topic    string
 }
 
+// liveSubscription is what the daemon uses of a connection.Subscription, as an
+// interface so a test can stand in for one.
+type liveSubscription interface {
+	Recv(timeout time.Duration) (frame.EventInfo, error)
+	Close() error
+}
+
 // subscription is one daemon-owned mesh subscription, independent of
 // how many (if any) control-socket connections are currently watching
 // it -- "subscribe" creates durable state, "watch" just taps into it,
@@ -34,7 +41,7 @@ type topicKey struct {
 type subscription struct {
 	mu       sync.Mutex
 	watchers map[chan PubsubEventNotification]struct{}
-	live     *connection.Subscription
+	live     liveSubscription
 	ended    bool
 
 	// ready is closed once the SUBSCRIBE that created this subscription has
@@ -50,11 +57,15 @@ const subscriptionPollInterval = 2 * time.Second
 
 // subscribe issues spec's SUBSCRIBE on sess as the daemon's identity, through
 // subscribeOn when a test has set it.
-func (srv *Server) subscribe(sess *connection.Session, spec frame.SubscribeSpec) (*connection.Subscription, error) {
+func (srv *Server) subscribe(sess *connection.Session, spec frame.SubscribeSpec) (liveSubscription, error) {
 	if srv.subscribeOn != nil {
 		return srv.subscribeOn(sess, spec, srv.id)
 	}
-	return sess.Subscribe(spec, srv.id)
+	live, err := sess.Subscribe(spec, srv.id)
+	if err != nil {
+		return nil, err
+	}
+	return live, nil
 }
 
 // replaySubscriptions subscribes every topic this daemon tracks on a
@@ -110,7 +121,7 @@ func (srv *Server) setSubscriptionDegraded(k topicKey, sub *subscription, degrad
 // with its session. A subscription that fell behind its queue is replaced
 // on the current session first and closed after, so the station
 // keeps the topic subscribed throughout.
-func (srv *Server) forwardEvents(k topicKey, sub *subscription, live *connection.Subscription) {
+func (srv *Server) forwardEvents(k topicKey, sub *subscription, live liveSubscription) {
 	for {
 		evt, err := live.Recv(subscriptionPollInterval)
 		switch {
@@ -133,7 +144,7 @@ func (srv *Server) forwardEvents(k topicKey, sub *subscription, live *connection
 // then closes live, the subscription that fell behind. It reports false
 // when there is nothing left to forward: the replacement failed, or sub
 // has ended or moved on to another live subscription meanwhile.
-func (srv *Server) replaceOverflowed(k topicKey, sub *subscription, live *connection.Subscription) (*connection.Subscription, bool) {
+func (srv *Server) replaceOverflowed(k topicKey, sub *subscription, live liveSubscription) (liveSubscription, bool) {
 	realm, err := hex.DecodeString(k.realmHex)
 	if err != nil {
 		_ = live.Close()
@@ -158,7 +169,7 @@ func (srv *Server) replaceOverflowed(k topicKey, sub *subscription, live *connec
 // follow makes live this subscription's current one, closing the one it
 // replaces. It reports false, closing live instead, once the subscription
 // has ended.
-func (sub *subscription) follow(live *connection.Subscription) bool {
+func (sub *subscription) follow(live liveSubscription) bool {
 	sub.mu.Lock()
 	if sub.ended {
 		sub.mu.Unlock()
@@ -177,7 +188,7 @@ func (sub *subscription) follow(live *connection.Subscription) bool {
 // swap makes next this subscription's current one in place of prev. It
 // reports false when the subscription has ended or prev is no longer its
 // current one.
-func (sub *subscription) swap(prev, next *connection.Subscription) bool {
+func (sub *subscription) swap(prev, next liveSubscription) bool {
 	sub.mu.Lock()
 	defer sub.mu.Unlock()
 	if sub.ended || sub.live != prev {
@@ -288,6 +299,9 @@ func (srv *Server) ensureSubscription(realm []byte, topic string) (*subscription
 	if claimed {
 		srv.subscribeClaimed(key, sub, realm, topic)
 	}
+	if !claimed && srv.sharedSubscription != nil {
+		srv.sharedSubscription(topic)
+	}
 	if err := sub.waitReady(); err != nil {
 		return nil, err
 	}
@@ -338,7 +352,9 @@ func (srv *Server) forgetSubscription(key topicKey, sub *subscription) {
 }
 
 // Subscribe creates (or confirms) a durable subscription to
-// (p.RealmHex, p.Topic).
+// (p.RealmHex, p.Topic). A Subscribe racing an Unsubscribe of the same topic
+// can come back Subscribed for a subscription the Unsubscribe has already
+// ended: whichever of the two changes the daemon's registry last wins.
 func (srv *Server) Subscribe(p PubsubSubscribeParams) (PubsubSubscribeResult, error) {
 	realm, err := parseRealmHex(p.RealmHex)
 	if err != nil {

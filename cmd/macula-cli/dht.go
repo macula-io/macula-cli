@@ -29,7 +29,7 @@ import (
 // capability itself.
 //
 // put-record is deliberately not exposed here: every current publisher
-// (hecate_om_capabilities and its Erlang counterpart) already has its own
+// (mcl_om_capabilities, in macula-services/mcl-om) already has its own
 // signing/TTL/re-advertise machinery, and a raw put-record subcommand
 // would need this CLI to construct and sign records itself with no real
 // consumer yet. Add it if/when something needs to publish a record from

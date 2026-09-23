@@ -74,35 +74,27 @@ type identitySignResult struct {
 	Signature string `json:"signature"`
 }
 
-// runIdentitySign produces a mailbox_ownership_proof / citizen_ownership_proof
-// style ownership proof: sign {node_id, timestamp, procedure} with this
-// machine's own identity, so a hecate-mail/hecate-citizens capability
-// gated on proof of DID ownership can verify the caller genuinely holds
-// the private key for the citizen_did they're acting as. Neither
-// service's macula_response handler is handed a verified caller
-// identity by hecate_om today (confirmed directly against its vendored
-// macula SDK) -- this is the client half of the interim fix; a caller
-// signs, the service verifies with macula_identity:verify/3 against the
-// same 32-byte node_id used as citizen_did.
+// runIdentitySign produces an ownership proof: it signs {node_id,
+// timestamp, procedure} with this machine's own identity, so a capability
+// gated on proof of node ownership can check that the caller holds the
+// private key behind the node_id it claims.
 //
-// The signed message MUST match the Erlang side's
-// mailbox_ownership_proof:message/3 / citizen_ownership_proof:message/3
-// byte for byte: node_id (32 raw bytes) ++ timestamp (8 bytes, big-endian)
-// ++ procedure (raw UTF-8 bytes) -- no delimiters, no length prefixes,
-// so both sides must agree on field widths exactly.
+// The signed message is node_id (32 raw bytes) ++ timestamp (8 bytes,
+// big-endian) ++ procedure (raw UTF-8 bytes) -- no delimiters, no length
+// prefixes -- the layout mcl_om_ownership_proof:message/3 (mcl-om) builds,
+// byte for byte.
 func runIdentitySign(args []string) int {
 	fs := flag.NewFlagSet("identity sign", flag.ContinueOnError)
 	jsonOut := fs.Bool("json", false, "emit a JSON result envelope instead of human-readable text")
 	identityPath := fs.String("identity", "", "path to a persisted identity seed (default: config dir)")
-	procedure := fs.String("procedure", "", "the mesh procedure this proof is for, e.g. hecate_mail.get_mailbox (required)")
+	procedure := fs.String("procedure", "", "the mesh procedure this proof is for, e.g. my_service.get_item (required)")
 	timestampMs := fs.Int64("timestamp", 0, "unix ms to sign (default: now) -- override only for testing/replay of a specific proof")
 	fs.Usage = func() {
 		fmt.Fprint(fs.Output(), "Usage: macula-cli identity sign --procedure <name> [flags]\n\n"+
 			"Signs a {node_id, timestamp, procedure} ownership proof with this machine's\n"+
-			"own identity, verifiable by any service using mailbox_ownership_proof or\n"+
-			"citizen_ownership_proof (hecate-mail, hecate-citizens). The resulting\n"+
-			"{timestamp, signature} pair is what such a service expects in a call's\n"+
-			"`proof` field; `node_id` is that call's `citizen_did`.\n\nFlags:\n")
+			"own identity, for a capability gated on proof of node ownership. The\n"+
+			"resulting {timestamp, signature} pair is what such a service expects in\n"+
+			"a call's `proof` field; `node_id` is that call's `citizen_did`.\n\nFlags:\n")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {

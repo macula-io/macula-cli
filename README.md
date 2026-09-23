@@ -120,18 +120,9 @@ found live: a first draft sharing one Session between serving and
 `call -via-daemon` intermittently stole its own reply frames. `dht
 find-record`/`find-records`/`find-records-by-type` followed, wrapping
 `macula-go`'s existing `dht.FindRecord`/`FindRecords`/`FindRecordsByType`
-(itself already complete — this was purely a missing CLI surface). Built to
-answer a real question live, not hypothetically: whether a service's
-capability (`hecate_stations.list_stations`) that `mesh_call`/`call -direct`
-both failed to reach was actually in the DHT at all under any realm.
-`find-records-by-type procedure_advertisement` against the demo fleet
-answered it directly — 16 real records, all a different service's
-(`hecate_mail`, `tube`), none `hecate_stations`'s, confirming the
-advertisement genuinely never landed rather than this being a realm- or
-routing-side problem. Also surfaced, incidentally, that `hecate_mail`
-advertises each of its procedures under two different names (`X.Y` and
-`_/X.Y`) — a pre-existing inconsistency in that service's own advertise
-code, unrelated to this addition and not fixed here. CI checks
+(itself already complete — this was purely a missing CLI surface). They answer
+whether a capability that `call` cannot reach is in the DHT at all, under
+any realm. CI checks
 `gofmt`/`vet`/`build`/`go test` plus a GoReleaser snapshot build, `shellcheck`
 on the install/uninstall scripts, and a PowerShell parse-check. Almost every
 command still talks to a live station by design and its own verification

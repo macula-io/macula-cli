@@ -32,12 +32,12 @@ func runCall(args []string) int {
 	identityPath := fs.String("identity", "", "path to a persisted identity seed (default: config dir)")
 	realmHex := fs.String("realm", "", "32-byte realm as hex (default: all-zero realm)")
 	argsJSON := fs.String("args", "null", "call payload as a JSON document")
-	argsFile := fs.String("args-file", "", "path to a JSON file with the call payload -- for payloads too large for -args' inline string (e.g. hecate-rag.upload_knowledge's raw document bytes); mutually exclusive with a non-default -args")
+	argsFile := fs.String("args-file", "", "path to a JSON file with the call payload -- for payloads too large for -args' inline string (e.g. a large document's raw bytes); mutually exclusive with a non-default -args")
 	timeout := fs.Duration("timeout", 15*time.Second, "connect + call timeout")
 	direct := fs.Bool("direct", false, "resolve the procedure's DHT direct-dial advertisement and call its server directly, instead of routing the call through <host>'s own advertise-gossip routes")
 	realmCA := fs.String("realm-ca", "", "PEM file: realm CA to verify against for cert-chain-authorized direct-dial (requires -direct and -org)")
 	org := fs.String("org", "", "expected org name for cert-chain-authorized direct-dial (requires -direct and -realm-ca)")
-	ucanFile := fs.String("ucan", "", "path to a UCAN token file to attach to the call -- composable with -direct, for a UCAN-gated capability reachable only via direct-dial (every hecate-om capability is)")
+	ucanFile := fs.String("ucan", "", "path to a UCAN token file to attach to the call -- composable with -direct, for a UCAN-gated capability reachable only via direct-dial")
 	viaDaemon := fs.Bool("via-daemon", false, "route this call through a running \"macula-cli daemon\" instead of dialing the mesh directly -- reuses its already-open Session, takes no <host[:port]>. Not composable with -direct.")
 	socketName := fs.String("socket-name", daemon.DefaultName, "with -via-daemon, the target daemon instance's -socket-name")
 	socketPath := fs.String("socket", "", "with -via-daemon, control socket path (default: derived from -socket-name)")
@@ -210,8 +210,8 @@ func runCall(args []string) int {
 
 // resolveArgsJSON returns the call payload as a JSON string, from either
 // -args (inline, the common case) or -args-file (a path, for a payload
-// too large to pass inline -- e.g. hecate-rag.upload_knowledge's raw
-// document bytes). The two are mutually exclusive: passing -args-file
+// too large to pass inline -- e.g. a large document's raw bytes).
+// The two are mutually exclusive: passing -args-file
 // alongside a non-default -args is a usage error, not a silent
 // last-one-wins.
 func resolveArgsJSON(argsJSON, argsFile string) (string, error) {

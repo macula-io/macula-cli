@@ -17,10 +17,10 @@ func TestProofMessageLayout(t *testing.T) {
 	for i := range nodeID {
 		nodeID[i] = byte(i)
 	}
-	got := proofMessage(nodeID, 0x0102030405060708, "hecate_mail.get_mailbox")
+	got := proofMessage(nodeID, 0x0102030405060708, "my_service.get_item")
 
-	if len(got) != 32+8+len("hecate_mail.get_mailbox") {
-		t.Fatalf("length = %d, want %d", len(got), 32+8+len("hecate_mail.get_mailbox"))
+	if len(got) != 32+8+len("my_service.get_item") {
+		t.Fatalf("length = %d, want %d", len(got), 32+8+len("my_service.get_item"))
 	}
 	for i := 0; i < 32; i++ {
 		if got[i] != byte(i) {
@@ -30,8 +30,8 @@ func TestProofMessageLayout(t *testing.T) {
 	if ts := binary.BigEndian.Uint64(got[32:40]); ts != 0x0102030405060708 {
 		t.Fatalf("timestamp = %#x, want %#x", ts, uint64(0x0102030405060708))
 	}
-	if string(got[40:]) != "hecate_mail.get_mailbox" {
-		t.Fatalf("procedure = %q, want %q", got[40:], "hecate_mail.get_mailbox")
+	if string(got[40:]) != "my_service.get_item" {
+		t.Fatalf("procedure = %q, want %q", got[40:], "my_service.get_item")
 	}
 }
 
@@ -44,7 +44,7 @@ func TestProofSignatureVerifies(t *testing.T) {
 	if err != nil {
 		t.Fatalf("identity.Generate: %v", err)
 	}
-	msg := proofMessage(kp.NodeID(), 1_700_000_000_000, "hecate_citizens.register_presence")
+	msg := proofMessage(kp.NodeID(), 1_700_000_000_000, "my_service.register")
 	sig := kp.Sign(msg)
 
 	if !identity.Verify(kp.NodeID(), msg, sig) {

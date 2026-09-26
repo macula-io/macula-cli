@@ -1,57 +1,54 @@
-// Package identitystore loads or mints the Ed25519 identity macula-cli
-// connects with, persisting it to a local file so repeated runs are
-// reachable under the same identity rather than a fresh one every time.
+// Package identitystore loads or creates the node identity key macula-cli
+// joins the mesh with: a macula 12 key (ML-DSA-87, or the pq_hybrid composite)
+// whose node_id solves the admission puzzle, kept in a file its owner alone
+// can read, so repeated runs are the same node.
 package identitystore
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 
 	"github.com/macula-io/macula-go/identity"
+	"github.com/macula-io/macula-go/profile"
 )
 
-// DefaultPath returns the identity file macula-cli uses when --identity
-// isn't given, via os.UserConfigDir() — $XDG_CONFIG_HOME (or
-// ~/.config) on Linux, ~/Library/Application Support on macOS,
-// %AppData% on Windows. Deliberately NOT hand-rolled: an earlier
-// version of this function only handled the Linux/XDG case and silently
-// fell back to ~/.config on Windows and macOS too, landing nowhere near
-// install.ps1's %LOCALAPPDATA%\macula-cli — caught writing the
-// uninstall scripts, not by anyone actually hitting it on those
-// platforms.
+// DefaultPath is the key file used when --identity is not given, under
+// os.UserConfigDir(): $XDG_CONFIG_HOME (or ~/.config) on Linux, ~/Library/
+// Application Support on macOS, %AppData% on Windows. The 10.x CLI kept an
+// Ed25519 seed beside it as identity.seed; macula 12 has no use for it.
 func DefaultPath() (string, error) {
 	base, err := os.UserConfigDir()
 	if err != nil {
-		return "", fmt.Errorf("identitystore: resolve user config directory: %w", err)
+		return "", fmt.Errorf("identitystore: resolve the user config directory: %w", err)
 	}
-	return filepath.Join(base, "macula-cli", "identity.seed"), nil
+	return filepath.Join(base, "macula-cli", "identity.key"), nil
 }
 
-// LoadOrGenerate loads the identity at path, or mints a fresh
-// puzzle-hardened one (identity.Generate — never an unhardened
-// shortcut, see macula-go's identity package doc on why that fails
-// silently) and persists it if none exists yet. Returns whether a new
-// identity was generated, so callers can tell the user their first
-// run just took a moment for puzzle grinding.
-func LoadOrGenerate(path string) (id identity.KeyPair, generated bool, err error) {
-	if _, statErr := os.Stat(path); statErr == nil {
-		id, err = identity.Load(path)
-		if err != nil {
-			return identity.KeyPair{}, false, fmt.Errorf("identitystore: load %s: %w", path, err)
-		}
-		return id, false, nil
+// LoadOrCreate loads the key at path, or creates one there when the file does
+// not exist, and says whether it created it: a new key solves the admission
+// puzzle, which takes a few seconds. A file holding anything but a macula 12
+// key of profile p is refused.
+func LoadOrCreate(path string, p profile.Profile) (key *identity.NodeKey, created bool, err error) {
+	key, err = identity.LoadKey(path, identity.PurposeIdentity, p)
+	if err == nil {
+		return key, false, nil
 	}
-
-	id, err = identity.Generate()
+	if !errors.Is(err, fs.ErrNotExist) {
+		return nil, false, fmt.Errorf("identitystore: %s is not a macula 12 key of profile %s (a 10.x identity.seed is not one; "+
+			"move it aside and a new key is created): %w", path, p, err)
+	}
+	key, err = identity.GenerateIdentityKey(p, identity.PuzzleDifficulty)
 	if err != nil {
-		return identity.KeyPair{}, false, fmt.Errorf("identitystore: generate: %w", err)
+		return nil, false, fmt.Errorf("identitystore: generate: %w", err)
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return identity.KeyPair{}, false, fmt.Errorf("identitystore: create config dir: %w", err)
+		return nil, false, fmt.Errorf("identitystore: create %s: %w", filepath.Dir(path), err)
 	}
-	if err := id.Save(path); err != nil {
-		return identity.KeyPair{}, false, fmt.Errorf("identitystore: save %s: %w", path, err)
+	if err := key.Save(path); err != nil {
+		return nil, false, fmt.Errorf("identitystore: save %s: %w", path, err)
 	}
-	return id, true, nil
+	return key, true, nil
 }

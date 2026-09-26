@@ -1,28 +1,49 @@
-// Package wirevalue bridges JSON (what a human or an agent types on the
-// command line, or wants printed back) and cbor.Value (what
-// macula-go's frames actually carry). Macula's wire model has no
-// bool and no distinct "float vs int" ambiguity the way JSON does — see
-// macula-go's cbor package doc — so this package is deliberately
-// narrow rather than a generic converter.
+// Package wirevalue maps payloads between JSON, as a user writes them on the
+// command line and reads them back, and macula's wire CBOR.
+//
+// JSON in: a string is text, an integer (no fraction or exponent) an integer
+// exact over int64, any other number a float, null is null, and an object
+// whose only key is "$bytes", holding standard padded base64, is a byte
+// string. A boolean is refused: macula's CBOR has none, so send 0 or 1.
+//
+// JSON out: bytes as the same {"$bytes": ...} object, so a value received can
+// be sent back unchanged; floats always with a fraction or exponent, so they
+// read back as floats; map keys in the wire's order.
 package wirevalue
 
 import (
-	"encoding/hex"
+	"bytes"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"math"
+	"strconv"
+	"strings"
 
 	"github.com/macula-io/macula-go/cbor"
 )
 
-// FromJSON parses a JSON document (typically the --args flag) into a
-// cbor.Value suitable for a CALL/STREAM_OPEN payload. JSON booleans are
-// rejected explicitly rather than silently coerced: Macula's wire
-// protocol has no bool type at all, so 'true'/'false' has no faithful
-// representation — the caller must pick 0/1 or restructure the payload.
-func FromJSON(data []byte) (cbor.Value, error) {
+var (
+	// ErrBoolean is a JSON boolean: macula's wire has no boolean.
+	ErrBoolean = errors.New("no boolean on the macula wire: send 0 or 1")
+	// ErrIntegerRange is an integer outside int64, which the wire refuses.
+	ErrIntegerRange = errors.New("an integer outside int64, the integers the macula wire carries")
+)
+
+const bytesKey = "$bytes"
+
+// FromJSON is one JSON value as wire CBOR.
+func FromJSON(text []byte) (cbor.Value, error) {
+	decoder := json.NewDecoder(bytes.NewReader(text))
+	decoder.UseNumber()
 	var v any
-	if err := json.Unmarshal(data, &v); err != nil {
-		return cbor.Value{}, fmt.Errorf("wirevalue: invalid JSON: %w", err)
+	if err := decoder.Decode(&v); err != nil {
+		return cbor.Value{}, fmt.Errorf("not one JSON value: %w", err)
+	}
+	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
+		return cbor.Value{}, errors.New("not one JSON value: more follows it")
 	}
 	return fromAny(v)
 }
@@ -32,79 +53,123 @@ func fromAny(v any) (cbor.Value, error) {
 	case nil:
 		return cbor.Null(), nil
 	case bool:
-		return cbor.Value{}, fmt.Errorf("wirevalue: JSON boolean %v has no wire representation (macula's CBOR has no bool type) — use 0/1 instead", t)
+		return cbor.Value{}, ErrBoolean
 	case string:
 		return cbor.Text(t), nil
-	case float64:
-		if t == float64(int64(t)) {
-			return cbor.Int(int64(t)), nil
-		}
-		return cbor.Float(t), nil
+	case json.Number:
+		return fromNumber(t)
 	case []any:
-		vals := make([]cbor.Value, len(t))
+		items := make([]cbor.Value, len(t))
 		for i, item := range t {
-			cv, err := fromAny(item)
+			value, err := fromAny(item)
 			if err != nil {
 				return cbor.Value{}, err
 			}
-			vals[i] = cv
+			items[i] = value
 		}
-		return cbor.List(vals), nil
+		return cbor.List(items), nil
 	case map[string]any:
+		if raw, only := t[bytesKey]; only && len(t) == 1 {
+			text, ok := raw.(string)
+			if !ok {
+				return cbor.Value{}, errors.New(`"$bytes" holds base64 text`)
+			}
+			b, err := base64.StdEncoding.DecodeString(text)
+			if err != nil {
+				return cbor.Value{}, fmt.Errorf(`"$bytes" is not standard padded base64: %w`, err)
+			}
+			return cbor.Bytes(b), nil
+		}
 		entries := make([]cbor.MapEntry, 0, len(t))
 		for k, item := range t {
-			cv, err := fromAny(item)
+			value, err := fromAny(item)
 			if err != nil {
 				return cbor.Value{}, err
 			}
-			entries = append(entries, cbor.MapEntry{Key: cbor.Text(k), Val: cv})
+			entries = append(entries, cbor.MapEntry{Key: cbor.Text(k), Val: value})
 		}
 		return cbor.Map(entries), nil
-	default:
-		return cbor.Value{}, fmt.Errorf("wirevalue: unsupported JSON value of type %T", v)
 	}
+	return cbor.Value{}, fmt.Errorf("a JSON value of type %T", v)
 }
 
-// ToJSON converts a cbor.Value into a plain Go value that
-// encoding/json can marshal directly. Bytes have no native JSON
-// representation, so they're rendered as a "0x"-prefixed hex string —
-// unambiguous against a real Text value, which never starts that way
-// after JSON-escaping (a real "0x..." Text value round-trips as
-// itself; ToJSON does not attempt to distinguish the two, since a hex
-// string in this tool's output is always meant to be read as bytes).
-func ToJSON(v cbor.Value) any {
-	if b, ok := v.AsBytes(); ok {
-		return "0x" + hex.EncodeToString(b)
-	}
-	if s, ok := v.AsText(); ok {
-		return s
-	}
-	if i, ok := v.AsInt64(); ok {
-		return i
-	}
-	if f, ok := v.AsFloat(); ok {
-		return f
-	}
-	if v.IsNull() {
-		return nil
-	}
-	if list, ok := v.AsList(); ok {
-		out := make([]any, len(list))
-		for i, item := range list {
-			out[i] = ToJSON(item)
+func fromNumber(n json.Number) (cbor.Value, error) {
+	text := n.String()
+	if !strings.ContainsAny(text, ".eE") {
+		i, err := strconv.ParseInt(text, 10, 64)
+		if err != nil {
+			return cbor.Value{}, ErrIntegerRange
 		}
-		return out
+		return cbor.Int(i), nil
 	}
-	if entries, ok := v.AsMap(); ok {
-		out := make(map[string]any, len(entries))
-		for _, e := range entries {
-			key := e.Key.String()
-			if s, ok := e.Key.AsText(); ok {
-				key = s
+	f, err := strconv.ParseFloat(text, 64)
+	if err != nil || math.IsInf(f, 0) {
+		return cbor.Value{}, fmt.Errorf("the number %s is not a finite float", text)
+	}
+	return cbor.Float(f), nil
+}
+
+// ToJSON is a wire value as JSON.
+func ToJSON(v cbor.Value) []byte {
+	var buf bytes.Buffer
+	write(&buf, v)
+	return buf.Bytes()
+}
+
+func write(buf *bytes.Buffer, v cbor.Value) {
+	switch v.Kind() {
+	case cbor.KindNull:
+		buf.WriteString("null")
+	case cbor.KindUInt, cbor.KindNegInt:
+		if i, ok := v.AsInt64(); ok {
+			buf.WriteString(strconv.FormatInt(i, 10))
+			return
+		}
+		// A uint64 beyond int64 (a station's own counters may be): its digits.
+		buf.WriteString(v.String())
+	case cbor.KindFloat:
+		f, _ := v.AsFloat()
+		text := strconv.FormatFloat(f, 'g', -1, 64)
+		if !strings.ContainsAny(text, ".eEn") {
+			text += ".0"
+		}
+		buf.WriteString(text)
+	case cbor.KindText:
+		s, _ := v.AsText()
+		quoted, _ := json.Marshal(s)
+		buf.Write(quoted)
+	case cbor.KindBytes:
+		b, _ := v.AsBytes()
+		buf.WriteString(`{"$bytes":"` + base64.StdEncoding.EncodeToString(b) + `"}`)
+	case cbor.KindList:
+		items, _ := v.AsList()
+		buf.WriteByte('[')
+		for i, item := range items {
+			if i > 0 {
+				buf.WriteByte(',')
 			}
-			out[key] = ToJSON(e.Val)
+			write(buf, item)
 		}
-		return out
+		buf.WriteByte(']')
+	case cbor.KindMap:
+		entries, _ := v.AsMap()
+		buf.WriteByte('{')
+		for i, e := range entries {
+			if i > 0 {
+				buf.WriteByte(',')
+			}
+			key, ok := e.Key.AsText()
+			if !ok {
+				key = e.Key.String()
+			}
+			quoted, _ := json.Marshal(key)
+			buf.Write(quoted)
+			buf.WriteByte(':')
+			write(buf, e.Val)
+		}
+		buf.WriteByte('}')
+	default:
+		quoted, _ := json.Marshal(v.String())
+		buf.Write(quoted)
 	}
-	return v.String()
 }

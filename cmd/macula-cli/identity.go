@@ -1,147 +1,57 @@
 package main
 
 import (
-	"encoding/binary"
-	"encoding/hex"
 	"flag"
 	"fmt"
-	"time"
+	"io"
 
-	"github.com/macula-io/macula-cli/internal/identitystore"
+	"github.com/macula-io/macula-go/identity"
+
 	"github.com/macula-io/macula-cli/internal/report"
 )
 
+// identityResult is the node key: its node_id, key id, profile and carried
+// public key's size.
 type identityResult struct {
-	NodeID    string `json:"node_id"`
-	Path      string `json:"path"`
-	Generated bool   `json:"generated"`
+	NodeID         string `json:"node_id"`
+	KeyID          string `json:"key_id"`
+	Profile        string `json:"profile"`
+	PublicKeyBytes int    `json:"public_key_bytes"`
 }
 
-// runIdentity is purely local -- no station, no network. It exists so a
-// caller (an MCP server shelling out to this binary is the motivating
-// case) can learn this machine's node ID without that being a side
-// effect buried inside some other command's connect step.
-//
-// "sign" is a subcommand rather than a flag on this base command
-// because it produces a fundamentally different result shape (a proof,
-// not an identity summary) and, unlike every other flag here, takes a
-// required argument of its own (--procedure).
-func runIdentity(args []string) int {
-	if len(args) > 0 && args[0] == "sign" {
-		return runIdentitySign(args[1:])
-	}
-
-	fs := flag.NewFlagSet("identity", flag.ContinueOnError)
-	jsonOut := fs.Bool("json", false, "emit a JSON result envelope instead of human-readable text")
-	identityPath := fs.String("identity", "", "path to a persisted identity seed (default: config dir)")
-	fs.Usage = func() {
-		fmt.Fprint(fs.Output(), "Usage: macula-cli identity [flags]\n\n"+
-			"Prints this machine's local identity (node ID), minting one via the same\n"+
-			"load-or-generate path every other command uses if none exists yet.\n\nFlags:\n")
-		fs.PrintDefaults()
-	}
-	if err := fs.Parse(args); err != nil {
-		return 2
-	}
-
-	path := *identityPath
-	if path == "" {
-		var err error
-		path, err = identitystore.DefaultPath()
-		if err != nil {
-			return report.Fail(*jsonOut, err, nil)
-		}
-	}
-	id, generated, err := identitystore.LoadOrGenerate(path)
+func describeKey(key *identity.NodeKey) (identityResult, error) {
+	id, err := key.NodeID()
 	if err != nil {
-		return report.Fail(*jsonOut, err, nil)
+		return identityResult{}, err
 	}
-
-	result := identityResult{
-		NodeID:    hexNodeID(id),
-		Path:      path,
-		Generated: generated,
-	}
-	report.Ok(*jsonOut, result, func() {
-		fmt.Println(result.NodeID)
-	})
-	return 0
+	keyID := key.KeyID()
+	return identityResult{NodeID: fmt.Sprintf("%x", id), KeyID: fmt.Sprintf("%x", keyID), Profile: string(key.Profile()),
+		PublicKeyBytes: len(key.PublicKey())}, nil
 }
 
-type identitySignResult struct {
-	NodeID    string `json:"node_id"`
-	Timestamp int64  `json:"timestamp"`
-	Signature string `json:"signature"`
-}
-
-// runIdentitySign produces an ownership proof: it signs {node_id,
-// timestamp, procedure} with this machine's own identity, so a capability
-// gated on proof of node ownership can check that the caller holds the
-// private key behind the node_id it claims.
-//
-// The signed message is node_id (32 raw bytes) ++ timestamp (8 bytes,
-// big-endian) ++ procedure (raw UTF-8 bytes) -- no delimiters, no length
-// prefixes -- the layout mcl_om_ownership_proof:message/3 (mcl-om) builds,
-// byte for byte.
-func runIdentitySign(args []string) int {
-	fs := flag.NewFlagSet("identity sign", flag.ContinueOnError)
-	jsonOut := fs.Bool("json", false, "emit a JSON result envelope instead of human-readable text")
-	identityPath := fs.String("identity", "", "path to a persisted identity seed (default: config dir)")
-	procedure := fs.String("procedure", "", "the mesh procedure this proof is for, e.g. my_service.get_item (required)")
-	timestampMs := fs.Int64("timestamp", 0, "unix ms to sign (default: now) -- override only for testing/replay of a specific proof")
+func runIdentity(args []string) int {
+	fs := flag.NewFlagSet("identity", flag.ContinueOnError)
+	var m meshFlags
+	m.register(fs, false)
 	fs.Usage = func() {
-		fmt.Fprint(fs.Output(), "Usage: macula-cli identity sign --procedure <name> [flags]\n\n"+
-			"Signs a {node_id, timestamp, procedure} ownership proof with this machine's\n"+
-			"own identity, for a capability gated on proof of node ownership. The\n"+
-			"resulting {timestamp, signature} pair is what such a service expects in\n"+
-			"a call's `proof` field; `node_id` is that call's `citizen_did`.\n\nFlags:\n")
+		fmt.Fprintln(fs.Output(), "usage: macula-cli identity [-identity <file>] [-profile pq_hybrid|pq_pure] [-json]")
+		fmt.Fprintln(fs.Output(), "       the node key macula-cli joins the mesh with, created on first use")
 		fs.PrintDefaults()
 	}
-	if err := fs.Parse(args); err != nil {
-		return 2
-	}
-	if *procedure == "" {
-		fmt.Fprintln(fs.Output(), "identity sign: --procedure is required")
+	if err := fs.Parse(args); err != nil || fs.NArg() != 0 {
 		fs.Usage()
 		return 2
 	}
-
-	path := *identityPath
-	if path == "" {
-		var err error
-		path, err = identitystore.DefaultPath()
-		if err != nil {
-			return report.Fail(*jsonOut, err, nil)
-		}
-	}
-	id, _, err := identitystore.LoadOrGenerate(path)
+	key, err := m.key()
 	if err != nil {
-		return report.Fail(*jsonOut, err, nil)
+		return report.Fail(m.jsonOut, err)
 	}
-
-	ts := *timestampMs
-	if ts == 0 {
-		ts = time.Now().UnixMilli()
+	r, err := describeKey(key)
+	if err != nil {
+		return report.Fail(m.jsonOut, err)
 	}
-	sig := id.Sign(proofMessage(id.NodeID(), ts, *procedure))
-
-	result := identitySignResult{
-		NodeID:    hexNodeID(id),
-		Timestamp: ts,
-		Signature: hex.EncodeToString(sig),
-	}
-	report.Ok(*jsonOut, result, func() {
-		fmt.Printf("node_id:   %s\n", result.NodeID)
-		fmt.Printf("timestamp: %d\n", result.Timestamp)
-		fmt.Printf("signature: %s\n", result.Signature)
+	report.Ok(m.jsonOut, r, func(w io.Writer) {
+		fmt.Fprintf(w, "node_id %s\nkey_id  %s\nprofile %s (public key %d bytes)\n", r.NodeID, r.KeyID, r.Profile, r.PublicKeyBytes)
 	})
 	return 0
-}
-
-func proofMessage(nodeID []byte, timestampMs int64, procedure string) []byte {
-	msg := make([]byte, 0, len(nodeID)+8+len(procedure))
-	msg = append(msg, nodeID...)
-	msg = binary.BigEndian.AppendUint64(msg, uint64(timestampMs))
-	msg = append(msg, []byte(procedure)...)
-	return msg
 }

@@ -1,77 +1,111 @@
-// Package report gives every macula-cli subcommand one consistent way
-// to emit a result: a JSON envelope for scripts/agents, or a plain
-// human-readable summary, from the same data. Failures are reported
-// through Macula's own BOLT#4 vocabulary (see macula-go's bolt4
-// package) rather than ad hoc text, so a caller parsing --json output
-// gets the same failure taxonomy the wire protocol itself uses.
+// Package report gives every macula-cli command one way to emit a result: a
+// JSON envelope for scripts and agents (--json), or plain text for people,
+// from the same data. A failure carries a kind from a fixed set, taken from
+// macula-go's typed errors, never from their text, and a provider's, relay's
+// or stream's own code where the wire gave one.
 package report
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
+
+	"github.com/macula-io/macula-go/pool"
+	"github.com/macula-io/macula-go/stationlink"
 )
 
-// Envelope is the top-level --json shape every subcommand emits.
+// Envelope is the --json shape of every result.
 type Envelope struct {
 	OK    bool   `json:"ok"`
 	Data  any    `json:"data,omitempty"`
 	Error *Error `json:"error,omitempty"`
 }
 
-// Error is the failure shape. Bolt4Code/Bolt4Name are populated only
-// when the failure is a wire-level BOLT#4 error (a CALL ERROR frame or
-// a STREAM_ERROR carrying one) — a local failure (DNS, timeout,
-// connection refused) leaves them empty rather than guessing a code.
+// Error is a failure: its kind, the provider's, relay's or stream's code and
+// detail when the wire carried one, and the message for people.
+//
+// Kinds: provider_error, relay_error, stream_error, timeout, no_provider,
+// no_realm_key, not_found, invalid_argument, failed.
 type Error struct {
-	Message   string `json:"message"`
-	Bolt4Code *uint8 `json:"bolt4_code,omitempty"`
-	Bolt4Name string `json:"bolt4_name,omitempty"`
-	Retryable *bool  `json:"retryable,omitempty"`
+	Kind    string `json:"kind"`
+	Code    string `json:"code,omitempty"`
+	Detail  string `json:"detail,omitempty"`
+	Relay   bool   `json:"relay,omitempty"`
+	Message string `json:"message"`
 }
 
-// Ok emits a success envelope. humanLines, if non-nil, is called
-// instead of JSON when jsonOut is false — its own output should go to
-// stdout via fmt.Println etc.
-func Ok(jsonOut bool, data any, human func()) {
+// Out is where results go; tests replace it.
+var Out io.Writer = os.Stdout
+
+// Errs is where failures go in text mode; tests replace it.
+var Errs io.Writer = os.Stderr
+
+// Ok emits a success: data as JSON when jsonOut, else human().
+func Ok(jsonOut bool, data any, human func(w io.Writer)) {
 	if jsonOut {
 		emit(Envelope{OK: true, Data: data})
 		return
 	}
 	if human != nil {
-		human()
+		human(Out)
 	}
 }
 
-// Fail emits a failure envelope and returns the process exit code (1)
-// the caller should return from main. wireErr carries BOLT#4 detail
-// when the failure came from a parsed CALL/STREAM error rather than a
-// local Go error — pass nil for a purely local failure.
-func Fail(jsonOut bool, err error, wireErr *Error) int {
-	e := &Error{Message: err.Error()}
-	if wireErr != nil {
-		e.Bolt4Code = wireErr.Bolt4Code
-		e.Bolt4Name = wireErr.Bolt4Name
-		e.Retryable = wireErr.Retryable
-	}
+// Fail emits err and returns the exit code, 1.
+func Fail(jsonOut bool, err error) int {
+	e := classify(err)
 	if jsonOut {
-		emit(Envelope{OK: false, Error: e})
-	} else {
-		fmt.Fprintf(os.Stderr, "error: %s", e.Message)
-		if e.Bolt4Name != "" {
-			fmt.Fprintf(os.Stderr, " (bolt4=%s", e.Bolt4Name)
-			if e.Retryable != nil {
-				fmt.Fprintf(os.Stderr, ", retryable=%v", *e.Retryable)
-			}
-			fmt.Fprint(os.Stderr, ")")
-		}
-		fmt.Fprintln(os.Stderr)
+		emit(Envelope{OK: false, Error: &e})
+		return 1
 	}
+	fmt.Fprintf(Errs, "error: %s\n", e.Message)
 	return 1
 }
 
+// Usage emits a malformed invocation (kind invalid_argument) and returns the
+// exit code, 2.
+func Usage(jsonOut bool, err error) int {
+	e := Error{Kind: "invalid_argument", Message: err.Error()}
+	if jsonOut {
+		emit(Envelope{OK: false, Error: &e})
+		return 2
+	}
+	fmt.Fprintf(Errs, "error: %s\n", e.Message)
+	return 2
+}
+
+func classify(err error) Error {
+	e := Error{Kind: "failed", Message: err.Error()}
+	var provider *stationlink.ProviderError
+	var relay *stationlink.RelayError
+	var stream *stationlink.StreamError
+	switch {
+	case errors.As(err, &provider):
+		e.Kind, e.Code = "provider_error", provider.Code
+		if provider.Detail != nil {
+			e.Detail = *provider.Detail
+		}
+	case errors.As(err, &relay):
+		e.Kind, e.Code = "relay_error", relay.Code
+	case errors.As(err, &stream):
+		e.Kind, e.Code, e.Detail, e.Relay = "stream_error", stream.Code, stream.Message, stream.Relay
+	case errors.Is(err, stationlink.ErrCallTimeout), errors.Is(err, context.DeadlineExceeded):
+		e.Kind = "timeout"
+	case errors.Is(err, pool.ErrNoProvider):
+		e.Kind = "no_provider"
+	case errors.Is(err, pool.ErrNoRealmKey):
+		e.Kind = "no_realm_key"
+	case errors.Is(err, stationlink.ErrRecordNotFound):
+		e.Kind = "not_found"
+	}
+	return e
+}
+
 func emit(env Envelope) {
-	enc := json.NewEncoder(os.Stdout)
+	enc := json.NewEncoder(Out)
 	enc.SetIndent("", "  ")
 	_ = enc.Encode(env)
 }

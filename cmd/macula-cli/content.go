@@ -4,305 +4,209 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
-	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
-	"time"
+	"os/signal"
+	"path/filepath"
 
-	"github.com/macula-io/macula-go/content"
 	"github.com/macula-io/macula-go/manifest"
+	"github.com/macula-io/macula-go/pool"
 
 	"github.com/macula-io/macula-cli/internal/report"
 )
 
+// parseMcid reads a content id: 100 hex characters.
+func parseMcid(text string) (manifest.Mcid, error) {
+	var mcid manifest.Mcid
+	raw, err := hex.DecodeString(text)
+	if err != nil || len(raw) != len(mcid) {
+		return mcid, errors.New("a content id is 100 hex characters (50 bytes)")
+	}
+	copy(mcid[:], raw)
+	return mcid, nil
+}
+
+// contentProbeResult is content shared by one node and fetched by another.
+type contentProbeResult struct {
+	Mcid  string `json:"mcid"`
+	Bytes int    `json:"bytes"`
+}
+
+// contentProbe shares size random bytes from sharer and fetches them from
+// fetcher, checking they arrive whole; then unshares them.
+func contentProbe(ctx context.Context, sharer, fetcher *pool.Pool, realm [32]byte, size int) (contentProbeResult, error) {
+	data := make([]byte, size)
+	if _, err := rand.Read(data); err != nil {
+		return contentProbeResult{}, err
+	}
+	mcid, err := sharer.ShareContent(ctx, realm, data, "macula-cli-probe.bin")
+	if err != nil {
+		return contentProbeResult{}, fmt.Errorf("share: %w", err)
+	}
+	defer sharer.UnshareContent(context.Background(), realm, mcid)
+	got, err := fetcher.GetContent(ctx, realm, mcid, pool.ContentOptions{})
+	if err != nil {
+		return contentProbeResult{}, fmt.Errorf("fetch: %w", err)
+	}
+	if !bytes.Equal(got, data) {
+		return contentProbeResult{}, errors.New("the fetched content differs from what was shared")
+	}
+	return contentProbeResult{Mcid: hex.EncodeToString(mcid[:]), Bytes: size}, nil
+}
+
 func runContent(args []string) int {
 	if len(args) == 0 {
-		fmt.Println("Usage: macula-cli content probe|put|get [flags] <host[:port]> ...")
+		fmt.Fprintln(os.Stderr, "usage: macula-cli content share|get|probe ...")
 		return 2
 	}
 	switch args[0] {
-	case "probe":
-		return runContentProbe(args[1:])
-	case "put":
-		return runContentPut(args[1:])
+	case "share":
+		return runContentShare(args[1:])
 	case "get":
 		return runContentGet(args[1:])
-	default:
-		fmt.Fprintf(os.Stderr, "macula-cli content: unknown subcommand %q (want probe, put, or get)\n", args[0])
-		return 2
+	case "probe":
+		return runContentProbe(args[1:])
 	}
+	fmt.Fprintf(os.Stderr, "macula-cli content: unknown subcommand %q (share, get, probe)\n", args[0])
+	return 2
 }
 
-type contentProbeResult struct {
-	Host         string `json:"host"`
-	Mcid         string `json:"mcid"`
-	SizeBytes    int    `json:"size_bytes"`
-	BytesMatched bool   `json:"bytes_matched"`
-	DurationMs   int64  `json:"duration_ms"`
-}
-
-// runContentProbe generates random test content, puts it, gets it back,
-// and confirms the bytes match — content.Get already Merkle-verifies
-// internally and errors on mismatch, so a clean round trip here proves
-// both put/get plumbing AND Merkle verification work, without the
-// caller needing a pre-existing MCID to test against.
-func runContentProbe(args []string) int {
-	fs := flag.NewFlagSet("content probe", flag.ContinueOnError)
-	jsonOut := fs.Bool("json", false, "emit a JSON result envelope instead of human-readable text")
-	identityPath := fs.String("identity", "", "path to a persisted identity seed (default: config dir)")
-	size := fs.Int("size", 4096, "bytes of random test content to round-trip")
-	connectTimeout := fs.Duration("connect-timeout", 15*time.Second, "connect timeout")
-	var seeds seedFlag
-	fs.Var(&seeds, "seed", "additional fallback station host[:port], tried in order after <host> if it doesn't answer; repeat for more than one")
+func contentFlags(name, usage string, extra func(*flag.FlagSet)) (*flag.FlagSet, *meshFlags) {
+	fs := flag.NewFlagSet("content "+name, flag.ContinueOnError)
+	m := &meshFlags{}
+	m.register(fs, true)
+	if extra != nil {
+		extra(fs)
+	}
 	fs.Usage = func() {
-		fmt.Fprint(fs.Output(), "Usage: macula-cli content probe [flags] <host[:port]>\n\n"+
-			"Puts N random bytes, gets them back, and confirms the bytes and Merkle\n"+
-			"verification both check out.\n\n"+
-			"With -seed, falls back to additional stations in order if <host> doesn't\n"+
-			"answer.\n\nFlags:\n")
+		fmt.Fprintln(fs.Output(), usage)
 		fs.PrintDefaults()
 	}
-	if err := fs.Parse(args); err != nil {
-		return 2
-	}
-	if fs.NArg() != 1 {
+	return fs, m
+}
+
+func runContentShare(args []string) int {
+	fs, m := contentFlags("share", "usage: macula-cli content share -seed host:port@<node_id> -realm <realm> [flags] <file>\n"+
+		"       the content is served from this node while it runs (node-served content): stop it and it is gone", nil)
+	duration := fs.Duration("for", 0, "share for this long (default: until interrupted)")
+	if err := fs.Parse(args); err != nil || fs.NArg() != 1 {
 		fs.Usage()
 		return 2
 	}
-
-	resolvedSeeds, err := resolveSeeds(fs.Arg(0), seeds)
+	data, err := os.ReadFile(fs.Arg(0))
 	if err != nil {
-		return report.Fail(*jsonOut, err, nil)
+		return report.Usage(m.jsonOut, err)
 	}
-	if *size <= 0 {
-		return report.Fail(*jsonOut, fmt.Errorf("--size must be positive"), nil)
-	}
-
-	id, generated, err := loadIdentity(*identityPath)
+	realm, err := realmID(m.realm)
 	if err != nil {
-		return report.Fail(*jsonOut, err, nil)
+		return report.Usage(m.jsonOut, err)
 	}
-	if generated && !*jsonOut {
-		fmt.Println("(generated a new identity — puzzle grinding took a moment)")
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), *connectTimeout)
-	defer cancel()
-	session, err := dialSeeds(ctx, resolvedSeeds, id)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	p, err := m.join(ctx)
 	if err != nil {
-		return report.Fail(*jsonOut, err, nil)
+		return report.Fail(m.jsonOut, err)
 	}
-	defer session.Close("normal", nil, id)
-
-	data := make([]byte, *size)
-	if _, err := rand.Read(data); err != nil {
-		return report.Fail(*jsonOut, fmt.Errorf("generate test content: %w", err), nil)
-	}
-
-	start := time.Now()
-	mcid, err := content.Put(ctx, session, data, "macula-cli-probe", id)
+	defer p.Close()
+	mcid, err := p.ShareContent(ctx, realm, data, filepath.Base(fs.Arg(0)))
 	if err != nil {
-		return report.Fail(*jsonOut, fmt.Errorf("put: %w", err), nil)
+		return report.Fail(m.jsonOut, err)
 	}
-	got, err := content.Get(ctx, session, mcid, id)
-	duration := time.Since(start).Milliseconds()
-	if err != nil {
-		return report.Fail(*jsonOut, fmt.Errorf("get (Merkle verification failed or content missing): %w", err), nil)
-	}
-
-	result := contentProbeResult{
-		Host:         fs.Arg(0),
-		Mcid:         hex.EncodeToString(mcid[:]),
-		SizeBytes:    *size,
-		BytesMatched: bytes.Equal(data, got),
-		DurationMs:   duration,
-	}
-
-	if !result.BytesMatched {
-		return report.Fail(*jsonOut, fmt.Errorf("retrieved content did not match what was put (mcid=%s)", result.Mcid), nil)
-	}
-
-	report.Ok(*jsonOut, result, func() {
-		fmt.Printf("%s: put+get+verify %d bytes OK (%d ms)\n", result.Host, result.SizeBytes, result.DurationMs)
-		fmt.Printf("  mcid: %s\n", result.Mcid)
+	report.Ok(m.jsonOut, map[string]any{"mcid": hex.EncodeToString(mcid[:]), "bytes": len(data)}, func(w io.Writer) {
+		fmt.Fprintf(w, "%x\n", mcid)
 	})
+	if !m.jsonOut {
+		fmt.Fprintln(os.Stderr, "sharing; interrupt to stop")
+	}
+	if *duration > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, *duration)
+		defer cancel()
+	}
+	<-ctx.Done()
+	_ = p.UnshareContent(context.Background(), realm, mcid)
 	return 0
-}
-
-type contentPutResult struct {
-	Host       string `json:"host"`
-	Mcid       string `json:"mcid"`
-	SizeBytes  int    `json:"size_bytes"`
-	DurationMs int64  `json:"duration_ms"`
-}
-
-func runContentPut(args []string) int {
-	fs := flag.NewFlagSet("content put", flag.ContinueOnError)
-	jsonOut := fs.Bool("json", false, "emit a JSON result envelope instead of human-readable text")
-	identityPath := fs.String("identity", "", "path to a persisted identity seed (default: config dir)")
-	connectTimeout := fs.Duration("connect-timeout", 15*time.Second, "connect timeout")
-	var seeds seedFlag
-	fs.Var(&seeds, "seed", "additional fallback station host[:port], tried in order after <host> if it doesn't answer; repeat for more than one")
-	fs.Usage = func() {
-		fmt.Fprint(fs.Output(), "Usage: macula-cli content put [flags] <host[:port]> <file>\n\n"+
-			"Uploads a file's contents to the mesh and prints its MCID (68 hex chars).\n\n"+
-			"With -seed, falls back to additional stations in order if <host> doesn't\n"+
-			"answer.\n\nFlags:\n")
-		fs.PrintDefaults()
-	}
-	if err := fs.Parse(args); err != nil {
-		return 2
-	}
-	if fs.NArg() != 2 {
-		fs.Usage()
-		return 2
-	}
-
-	resolvedSeeds, err := resolveSeeds(fs.Arg(0), seeds)
-	if err != nil {
-		return report.Fail(*jsonOut, err, nil)
-	}
-	filePath := fs.Arg(1)
-	data, err := os.ReadFile(filePath)
-	if err != nil {
-		return report.Fail(*jsonOut, fmt.Errorf("read %s: %w", filePath, err), nil)
-	}
-
-	id, generated, err := loadIdentity(*identityPath)
-	if err != nil {
-		return report.Fail(*jsonOut, err, nil)
-	}
-	if generated && !*jsonOut {
-		fmt.Println("(generated a new identity — puzzle grinding took a moment)")
-	}
-
-	start := time.Now()
-	ctx, cancel := context.WithTimeout(context.Background(), *connectTimeout)
-	defer cancel()
-	session, err := dialSeeds(ctx, resolvedSeeds, id)
-	if err != nil {
-		return report.Fail(*jsonOut, err, nil)
-	}
-	defer session.Close("normal", nil, id)
-
-	mcid, err := content.Put(ctx, session, data, filePath, id)
-	if err != nil {
-		return report.Fail(*jsonOut, fmt.Errorf("put: %w", err), nil)
-	}
-
-	result := contentPutResult{
-		Host:       fs.Arg(0),
-		Mcid:       hex.EncodeToString(mcid[:]),
-		SizeBytes:  len(data),
-		DurationMs: time.Since(start).Milliseconds(),
-	}
-	report.Ok(*jsonOut, result, func() {
-		fmt.Println(result.Mcid)
-	})
-	return 0
-}
-
-type contentGetResult struct {
-	Host          string `json:"host"`
-	Mcid          string `json:"mcid"`
-	SizeBytes     int    `json:"size_bytes"`
-	Out           string `json:"out,omitempty"`
-	ContentBase64 string `json:"content_base64,omitempty"`
-	DurationMs    int64  `json:"duration_ms"`
 }
 
 func runContentGet(args []string) int {
-	fs := flag.NewFlagSet("content get", flag.ContinueOnError)
-	jsonOut := fs.Bool("json", false, "emit a JSON result envelope instead of human-readable text")
-	identityPath := fs.String("identity", "", "path to a persisted identity seed (default: config dir)")
-	out := fs.String("out", "", "write the retrieved bytes to this file (default: print to stdout in human mode, base64 in --json)")
-	connectTimeout := fs.Duration("connect-timeout", 15*time.Second, "connect timeout")
-	var seeds seedFlag
-	fs.Var(&seeds, "seed", "additional fallback station host[:port], tried in order after <host> if it doesn't answer; repeat for more than one")
-	fs.Usage = func() {
-		fmt.Fprint(fs.Output(), "Usage: macula-cli content get [flags] <host[:port]> <mcid>\n\n"+
-			"Downloads and Merkle-verifies content by its 68-hex-char MCID (content.Get\n"+
-			"errors on verification failure, so a clean exit means it checked out).\n\n"+
-			"With -seed, falls back to additional stations in order if <host> doesn't\n"+
-			"answer.\n\nFlags:\n")
-		fs.PrintDefaults()
-	}
-	if err := fs.Parse(args); err != nil {
-		return 2
-	}
-	if fs.NArg() != 2 {
+	fs, m := contentFlags("get", "usage: macula-cli content get -seed host:port@<node_id> -realm <realm> [flags] <mcid>", nil)
+	out := fs.String("out", "", "write the content to this file (default: stdout)")
+	maxBytes := fs.Uint64("max-bytes", 0, "refuse content larger than this (default: macula's 256 MiB)")
+	if err := fs.Parse(args); err != nil || fs.NArg() != 1 {
 		fs.Usage()
 		return 2
 	}
-
-	resolvedSeeds, err := resolveSeeds(fs.Arg(0), seeds)
+	mcid, err := parseMcid(fs.Arg(0))
 	if err != nil {
-		return report.Fail(*jsonOut, err, nil)
+		return report.Usage(m.jsonOut, err)
 	}
-	mcid, err := parseMcid(fs.Arg(1))
+	realm, err := realmID(m.realm)
 	if err != nil {
-		return report.Fail(*jsonOut, err, nil)
+		return report.Usage(m.jsonOut, err)
 	}
-
-	id, generated, err := loadIdentity(*identityPath)
+	ctx := context.Background()
+	p, err := m.join(ctx)
 	if err != nil {
-		return report.Fail(*jsonOut, err, nil)
+		return report.Fail(m.jsonOut, err)
 	}
-	if generated && !*jsonOut {
-		fmt.Println("(generated a new identity — puzzle grinding took a moment)")
-	}
-
-	start := time.Now()
-	ctx, cancel := context.WithTimeout(context.Background(), *connectTimeout)
-	defer cancel()
-	session, err := dialSeeds(ctx, resolvedSeeds, id)
+	defer p.Close()
+	data, err := p.GetContent(ctx, realm, mcid, pool.ContentOptions{MaxBytes: *maxBytes})
 	if err != nil {
-		return report.Fail(*jsonOut, err, nil)
+		return report.Fail(m.jsonOut, err)
 	}
-	defer session.Close("normal", nil, id)
-
-	data, err := content.Get(ctx, session, mcid, id)
-	if err != nil {
-		return report.Fail(*jsonOut, fmt.Errorf("get (Merkle verification failed or content missing): %w", err), nil)
-	}
-
 	if *out != "" {
 		if err := os.WriteFile(*out, data, 0o644); err != nil {
-			return report.Fail(*jsonOut, fmt.Errorf("write %s: %w", *out, err), nil)
+			return report.Fail(m.jsonOut, err)
 		}
+		report.Ok(m.jsonOut, map[string]any{"mcid": fs.Arg(0), "bytes": len(data), "file": *out}, func(w io.Writer) {
+			fmt.Fprintf(w, "%d bytes to %s\n", len(data), *out)
+		})
+		return 0
 	}
-
-	result := contentGetResult{
-		Host:       fs.Arg(0),
-		Mcid:       fs.Arg(1),
-		SizeBytes:  len(data),
-		Out:        *out,
-		DurationMs: time.Since(start).Milliseconds(),
+	if m.jsonOut {
+		return report.Usage(true, errors.New("content get -json needs -out: the content is not JSON"))
 	}
-	if *out == "" && *jsonOut {
-		result.ContentBase64 = base64.StdEncoding.EncodeToString(data)
-	}
-	report.Ok(*jsonOut, result, func() {
-		if *out != "" {
-			fmt.Printf("wrote %d bytes to %s\n", result.SizeBytes, *out)
-		} else {
-			os.Stdout.Write(data)
-		}
-	})
+	_, _ = report.Out.Write(data)
 	return 0
 }
 
-func parseMcid(s string) (manifest.Mcid, error) {
-	b, err := hex.DecodeString(s)
+func runContentProbe(args []string) int {
+	fs, m := contentFlags("probe", "usage: macula-cli content probe -seed host:port@<node_id> [-seed ...] -realm <realm> [flags]\n"+
+		"       two keys made for the run: a sharer linked to the first seed, a fetcher to the last", nil)
+	size := fs.Int("size", 300_000, "bytes to share (over 256 KiB takes the chunked path)")
+	if err := fs.Parse(args); err != nil || fs.NArg() != 0 {
+		fs.Usage()
+		return 2
+	}
+	realm, err := realmID(m.realm)
 	if err != nil {
-		return manifest.Mcid{}, fmt.Errorf("invalid MCID hex: %w", err)
+		return report.Usage(m.jsonOut, err)
 	}
-	if len(b) != 34 {
-		return manifest.Mcid{}, fmt.Errorf("MCID must be 34 bytes (68 hex chars), got %d bytes", len(b))
+	ctx, cancel := context.WithTimeout(context.Background(), 4*m.timeout)
+	defer cancel()
+	m.ephemeral = true
+	sharerFlags, fetcherFlags := *m, *m
+	sharerFlags.seeds, fetcherFlags.seeds = m.seeds[:1], m.seeds[len(m.seeds)-1:]
+	sharer, err := sharerFlags.join(ctx)
+	if err != nil {
+		return report.Fail(m.jsonOut, err)
 	}
-	var mcid manifest.Mcid
-	copy(mcid[:], b)
-	return mcid, nil
+	defer sharer.Close()
+	fetcher, err := fetcherFlags.join(ctx)
+	if err != nil {
+		return report.Fail(m.jsonOut, err)
+	}
+	defer fetcher.Close()
+	result, err := contentProbe(ctx, sharer, fetcher, realm, *size)
+	if err != nil {
+		return report.Fail(m.jsonOut, err)
+	}
+	report.Ok(m.jsonOut, result, func(w io.Writer) {
+		fmt.Fprintf(w, "%d bytes shared and fetched whole: %s\n", result.Bytes, result.Mcid)
+	})
+	return 0
 }

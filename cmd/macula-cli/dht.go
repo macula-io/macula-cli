@@ -2,396 +2,151 @@ package main
 
 import (
 	"context"
-	"encoding/hex"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"strconv"
-	"time"
+	"strings"
 
-	"github.com/macula-io/macula-go/connection"
-	"github.com/macula-io/macula-go/dht"
+	"github.com/macula-io/macula-go/pool"
+	"github.com/macula-io/macula-go/record"
 
 	"github.com/macula-io/macula-cli/internal/report"
 	"github.com/macula-io/macula-cli/internal/wirevalue"
 )
 
-// runDht dispatches the read-side of the mesh's signed DHT record store --
-// find-record/find-records/find-records-by-type mirror macula.erl's own
-// three-function facade (find_record/2, find_records/2,
-// find_records_by_type/2) and macula-go's dht.FindRecord/FindRecords/
-// FindRecordsByType 1:1. All three always run under the DHT's own
-// all-zero realm (dht.dhtRealm, unexported and hardcoded in macula-go --
-// there is no -realm flag here, unlike call/pubsub) since DHT storage is
-// protocol-internal infrastructure, not a realm-scoped application
-// concern; a discovered record's OWN payload (e.g. procedure_advertisement's
-// procedure_uri) is what carries the realm a caller would need for the
-// capability itself.
-//
-// put-record is deliberately not exposed here: every current publisher
-// (mcl_om_capabilities, in macula-services/mcl-om) already has its own
-// signing/TTL/re-advertise machinery, and a raw put-record subcommand
-// would need this CLI to construct and sign records itself with no real
-// consumer yet. Add it if/when something needs to publish a record from
-// the command line rather than a long-running service.
-func runDht(args []string) int {
-	if len(args) == 0 {
-		fmt.Println("Usage: macula-cli dht find-record|find-records|find-records-by-type [flags] <host[:port]> ...")
-		return 2
-	}
-	switch args[0] {
-	case "find-record":
-		return runDhtFindRecord(args[1:])
-	case "find-records":
-		return runDhtFindRecords(args[1:])
-	case "find-records-by-type":
-		return runDhtFindRecordsByType(args[1:])
-	default:
-		fmt.Fprintf(os.Stderr, "macula-cli dht: unknown subcommand %q (want find-record, find-records, or find-records-by-type)\n", args[0])
-		return 2
-	}
+// recordTypes are macula 12's record types by the names the CLI takes.
+var recordTypes = map[string]record.Type{
+	"node_record":             0x01,
+	"procedure_advertisement": 0x06,
+	"tombstone":               0x0c,
+	"content_announcement":    0x11,
+	"station_endpoint":        0x12,
+	"org_directory":           0x15,
+	"procedure_delegation":    0x16,
 }
 
-// dhtRecordJSON is the --json shape for one record, common to all three
-// subcommands. Payload is the generic wirevalue.ToJSON fallback every
-// record type gets; ProcedureAdvertisement is populated in addition
-// (not instead) when Type is TypeProcedureAdvertisement, since that's
-// the one type this CLI currently has a typed reader for.
-type dhtRecordJSON struct {
-	Type                   uint8                       `json:"type"`
-	TypeName               string                      `json:"type_name,omitempty"`
-	KeyHex                 string                      `json:"key"`
-	VersionHex             string                      `json:"version"`
-	CreatedAtMs            int64                       `json:"created_at_ms"`
-	ExpiresAtMs            int64                       `json:"expires_at_ms"`
-	Verified               bool                        `json:"verified"`
-	VerifyError            string                      `json:"verify_error,omitempty"`
-	Payload                any                         `json:"payload"`
-	ProcedureAdvertisement *procedureAdvertisementJSON `json:"procedure_advertisement,omitempty"`
+// foundRecord is a verified DHT record as the CLI reports it.
+type foundRecord struct {
+	Type      uint64  `json:"type"`
+	KeyID     string  `json:"key_id"`
+	CreatedAt uint64  `json:"created_at"`
+	ExpiresAt uint64  `json:"expires_at"`
+	Payload   rawJSON `json:"payload"`
 }
 
-type procedureAdvertisementJSON struct {
-	ProcedureURI   string `json:"procedure_uri"`
-	Realm          string `json:"realm,omitempty"`
-	Procedure      string `json:"procedure,omitempty"`
-	AdvertiserNode string `json:"advertiser_node"`
-	ServingStation string `json:"serving_station"`
-	HasCertChain   bool   `json:"has_cert_chain"`
+// foundRecords is a lookup's verified records, and how many it dropped as
+// failing verification.
+type foundRecords struct {
+	Records []foundRecord `json:"records"`
+	Dropped int           `json:"dropped"`
 }
 
-func recordTypeName(t uint8) string {
-	switch t {
-	case dht.TypeProcedureAdvertisement:
-		return "procedure_advertisement"
-	case dht.TypeContentAnnouncement:
-		return "content_announcement"
-	case dht.TypeStationEndpoint:
-		return "station_endpoint"
-	default:
-		return ""
-	}
+func reported(v record.Verified) foundRecord {
+	r := v.Record()
+	return foundRecord{Type: uint64(r.Type), KeyID: fmt.Sprintf("%x", r.KeyID), CreatedAt: r.CreatedAt,
+		ExpiresAt: r.ExpiresAt, Payload: rawJSON(wirevalue.ToJSON(r.Payload))}
 }
 
-// parseRecordType accepts either a known type name or a raw 0-255
-// number, so a caller doesn't need to memorize that procedure_advertisement
-// is 6.
-func parseRecordType(s string) (uint8, error) {
-	switch s {
-	case "procedure_advertisement":
-		return dht.TypeProcedureAdvertisement, nil
-	case "content_announcement":
-		return dht.TypeContentAnnouncement, nil
-	case "station_endpoint":
-		return dht.TypeStationEndpoint, nil
-	}
-	n, err := strconv.ParseUint(s, 10, 8)
-	if err != nil {
-		return 0, fmt.Errorf("invalid record type %q: not a known name (procedure_advertisement, content_announcement, station_endpoint) or a number 0-255: %w", s, err)
-	}
-	return uint8(n), nil
-}
-
-func parseDhtKey(s string) ([32]byte, error) {
-	var key [32]byte
-	b, err := hex.DecodeString(s)
-	if err != nil {
-		return key, fmt.Errorf("invalid key hex: %w", err)
-	}
-	if len(b) != 32 {
-		return key, fmt.Errorf("key must be 32 bytes (64 hex chars), got %d bytes", len(b))
-	}
-	copy(key[:], b)
-	return key, nil
-}
-
-// splitDiscoveryURI reverses dht.DiscoveryURI's hex(realm) + "/" + procedure
-// construction. A realm is always exactly 64 hex chars, so this takes the
-// first 64 chars as the realm rather than searching for a slash -- robust
-// even if procedure itself happens to contain one.
-func splitDiscoveryURI(uri string) (realm, procedure string, ok bool) {
-	if len(uri) < 66 || uri[64] != '/' {
-		return "", "", false
-	}
-	return uri[:64], uri[65:], true
-}
-
-// toRecordJSON converts one dht.Record into its --json shape, verifying
-// its signature along the way (the SDK's own FindRecord/FindRecords/
-// FindRecordsByType docs are explicit that a caller must do this before
-// trusting the payload -- reported here rather than silently skipped so
-// human and --json output both surface an unverifiable or expired record
-// instead of presenting it as equally trustworthy as a good one).
-func toRecordJSON(rec dht.Record) dhtRecordJSON {
-	out := dhtRecordJSON{
-		Type:        rec.Type,
-		TypeName:    recordTypeName(rec.Type),
-		KeyHex:      hex.EncodeToString(rec.Key),
-		VersionHex:  hex.EncodeToString(rec.Version),
-		CreatedAtMs: rec.CreatedAt,
-		ExpiresAtMs: rec.ExpiresAt,
-		Payload:     wirevalue.ToJSON(rec.Payload),
-	}
-	if err := dht.Verify(rec); err != nil {
-		out.VerifyError = err.Error()
-	} else {
-		out.Verified = true
-	}
-	if rec.Type == dht.TypeProcedureAdvertisement {
-		if adv, err := dht.ReadProcedureAdvertisement(rec); err == nil {
-			pa := &procedureAdvertisementJSON{
-				ProcedureURI:   adv.ProcedureURI,
-				AdvertiserNode: hex.EncodeToString(adv.AdvertiserNode),
-				ServingStation: hex.EncodeToString(adv.ServingStation),
-				HasCertChain:   len(adv.CertChain) > 0,
-			}
-			if realm, procedure, ok := splitDiscoveryURI(adv.ProcedureURI); ok {
-				pa.Realm = realm
-				pa.Procedure = procedure
-			}
-			out.ProcedureAdvertisement = pa
-		}
+func reportedAll(vs []record.Verified, dropped int) foundRecords {
+	out := foundRecords{Records: make([]foundRecord, 0, len(vs)), Dropped: dropped}
+	for _, v := range vs {
+		out.Records = append(out.Records, reported(v))
 	}
 	return out
 }
 
-func printRecordHuman(rec dhtRecordJSON) {
-	name := rec.TypeName
-	if name == "" {
-		name = fmt.Sprintf("type=%d", rec.Type)
+// recordType reads a type by name or number (decimal or 0x hex).
+func recordType(text string) (record.Type, error) {
+	if t, ok := recordTypes[text]; ok {
+		return t, nil
 	}
-	verified := "verified"
-	if !rec.Verified {
-		verified = "UNVERIFIED (" + rec.VerifyError + ")"
+	n, err := strconv.ParseUint(text, 0, 8)
+	if err != nil {
+		names := make([]string, 0, len(recordTypes))
+		for name := range recordTypes {
+			names = append(names, name)
+		}
+		return 0, fmt.Errorf("record type %q: a number or one of %s", text, strings.Join(names, ", "))
 	}
-	fmt.Printf("- %s  key=%s  %s\n", name, rec.KeyHex, verified)
-	if rec.ProcedureAdvertisement != nil {
-		pa := rec.ProcedureAdvertisement
-		fmt.Printf("    procedure: %s\n", pa.Procedure)
-		fmt.Printf("    realm:     %s\n", pa.Realm)
-		fmt.Printf("    advertiser_node: %s\n", pa.AdvertiserNode)
-		fmt.Printf("    serving_station: %s\n", pa.ServingStation)
-	}
+	return record.Type(n), nil
 }
 
-func connectForDht(ctx context.Context, hostPort string, extraSeeds seedFlag, identityPath string, connectTimeout time.Duration) (*connection.Session, error) {
-	seeds, err := resolveSeeds(hostPort, extraSeeds)
+func findByType(ctx context.Context, p *pool.Pool, t record.Type) (foundRecords, error) {
+	vs, dropped, err := p.FindRecordsByType(ctx, t)
 	if err != nil {
-		return nil, err
+		return foundRecords{}, err
 	}
-	id, generated, err := loadIdentity(identityPath)
-	if err != nil {
-		return nil, err
+	return reportedAll(vs, dropped), nil
+}
+
+func runDht(args []string) int {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: macula-cli dht find-record|find-records|find-records-by-type ...")
+		return 2
 	}
-	if generated {
-		fmt.Fprintln(os.Stderr, "(generated a new identity — puzzle grinding took a moment)")
+	sub := args[0]
+	fs := flag.NewFlagSet("dht "+sub, flag.ContinueOnError)
+	var m meshFlags
+	m.register(fs, false)
+	fs.Usage = func() {
+		fmt.Fprintf(fs.Output(), "usage: macula-cli dht %s -seed host:port@<node_id> [flags] <%s>\n", sub,
+			map[bool]string{true: "type", false: "key hex"}[sub == "find-records-by-type"])
+		fs.PrintDefaults()
 	}
-	cctx, cancel := context.WithTimeout(ctx, connectTimeout)
+	if sub != "find-record" && sub != "find-records" && sub != "find-records-by-type" {
+		fmt.Fprintf(os.Stderr, "macula-cli dht: unknown subcommand %q\n", sub)
+		return 2
+	}
+	if err := fs.Parse(args[1:]); err != nil || fs.NArg() != 1 {
+		fs.Usage()
+		return 2
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), m.timeout)
 	defer cancel()
-	return dialSeeds(cctx, seeds, id)
-}
-
-type dhtFindRecordResult struct {
-	Host   string         `json:"host"`
-	Found  bool           `json:"found"`
-	Record *dhtRecordJSON `json:"record,omitempty"`
-}
-
-func runDhtFindRecord(args []string) int {
-	fs := flag.NewFlagSet("dht find-record", flag.ContinueOnError)
-	jsonOut := fs.Bool("json", false, "emit a JSON result envelope instead of human-readable text")
-	identityPath := fs.String("identity", "", "path to a persisted identity seed (default: config dir)")
-	connectTimeout := fs.Duration("connect-timeout", 15*time.Second, "connect timeout")
-	var seeds seedFlag
-	fs.Var(&seeds, "seed", "additional fallback station host[:port], tried in order after <host> if it doesn't answer; repeat for more than one")
-	fs.Usage = func() {
-		fmt.Fprint(fs.Output(), "Usage: macula-cli dht find-record [flags] <host[:port]> <key-hex>\n\n"+
-			"Fetches one DHT record by its 32-byte storage key (64 hex chars) -- e.g.\n"+
-			"dht.ProcedureKey/StationEndpointKey/ContentKey's output. Always the DHT's\n"+
-			"own all-zero realm; there is no -realm flag.\n\nFlags:\n")
-		fs.PrintDefaults()
-	}
-	if err := fs.Parse(args); err != nil {
-		return 2
-	}
-	if fs.NArg() != 2 {
-		fs.Usage()
-		return 2
-	}
-	key, err := parseDhtKey(fs.Arg(1))
-	if err != nil {
-		return report.Fail(*jsonOut, err, nil)
-	}
-
-	ctx := context.Background()
-	session, err := connectForDht(ctx, fs.Arg(0), seeds, *identityPath, *connectTimeout)
-	if err != nil {
-		return report.Fail(*jsonOut, err, nil)
-	}
-	id, _, _ := loadIdentity(*identityPath)
-	defer session.Close("normal", nil, id)
-
-	rec, err := dht.FindRecord(session, id, key)
-	if err == dht.ErrNotFound {
-		result := dhtFindRecordResult{Host: fs.Arg(0), Found: false}
-		report.Ok(*jsonOut, result, func() { fmt.Println("not found") })
-		return 0
+	var (
+		key [32]byte
+		t   record.Type
+		err error
+	)
+	if sub == "find-records-by-type" {
+		t, err = recordType(fs.Arg(0))
+	} else {
+		key, err = hex32(fs.Arg(0))
 	}
 	if err != nil {
-		return report.Fail(*jsonOut, err, nil)
+		return report.Usage(m.jsonOut, err)
 	}
-
-	recJSON := toRecordJSON(rec)
-	result := dhtFindRecordResult{Host: fs.Arg(0), Found: true, Record: &recJSON}
-	report.Ok(*jsonOut, result, func() { printRecordHuman(recJSON) })
-	return 0
-}
-
-type dhtFindRecordsResult struct {
-	Host    string          `json:"host"`
-	Count   int             `json:"count"`
-	Records []dhtRecordJSON `json:"records"`
-}
-
-func runDhtFindRecords(args []string) int {
-	fs := flag.NewFlagSet("dht find-records", flag.ContinueOnError)
-	jsonOut := fs.Bool("json", false, "emit a JSON result envelope instead of human-readable text")
-	identityPath := fs.String("identity", "", "path to a persisted identity seed (default: config dir)")
-	connectTimeout := fs.Duration("connect-timeout", 15*time.Second, "connect timeout")
-	var seeds seedFlag
-	fs.Var(&seeds, "seed", "additional fallback station host[:port], tried in order after <host> if it doesn't answer; repeat for more than one")
-	fs.Usage = func() {
-		fmt.Fprint(fs.Output(), "Usage: macula-cli dht find-records [flags] <host[:port]> <key-hex>\n\n"+
-			"Fetches EVERY record stored at key -- the full signer-deduped multiset\n"+
-			"(e.g. every procedure_advertisement one procedure has from different\n"+
-			"providers). Always the DHT's own all-zero realm; there is no -realm flag.\n\nFlags:\n")
-		fs.PrintDefaults()
-	}
-	if err := fs.Parse(args); err != nil {
-		return 2
-	}
-	if fs.NArg() != 2 {
-		fs.Usage()
-		return 2
-	}
-	key, err := parseDhtKey(fs.Arg(1))
+	p, err := m.join(ctx)
 	if err != nil {
-		return report.Fail(*jsonOut, err, nil)
+		return report.Fail(m.jsonOut, err)
 	}
-
-	ctx := context.Background()
-	session, err := connectForDht(ctx, fs.Arg(0), seeds, *identityPath, *connectTimeout)
-	if err != nil {
-		return report.Fail(*jsonOut, err, nil)
-	}
-	id, _, _ := loadIdentity(*identityPath)
-	defer session.Close("normal", nil, id)
-
-	recs, err := dht.FindRecords(session, id, key)
-	if err != nil {
-		return report.Fail(*jsonOut, err, nil)
-	}
-
-	recsJSON := make([]dhtRecordJSON, len(recs))
-	for i, rec := range recs {
-		recsJSON[i] = toRecordJSON(rec)
-	}
-	result := dhtFindRecordsResult{Host: fs.Arg(0), Count: len(recsJSON), Records: recsJSON}
-	report.Ok(*jsonOut, result, func() {
-		if len(recsJSON) == 0 {
-			fmt.Println("no records at this key")
-			return
+	defer p.Close()
+	var result foundRecords
+	switch sub {
+	case "find-record":
+		v, err := p.FindRecord(ctx, key)
+		if err != nil {
+			return report.Fail(m.jsonOut, err)
 		}
-		for _, r := range recsJSON {
-			printRecordHuman(r)
+		result = reportedAll([]record.Verified{v}, 0)
+	case "find-records":
+		vs, dropped, err := p.FindRecords(ctx, key)
+		if err != nil {
+			return report.Fail(m.jsonOut, err)
 		}
-	})
-	return 0
-}
-
-type dhtFindRecordsByTypeResult struct {
-	Host    string          `json:"host"`
-	Type    uint8           `json:"type"`
-	Count   int             `json:"count"`
-	Records []dhtRecordJSON `json:"records"`
-}
-
-func runDhtFindRecordsByType(args []string) int {
-	fs := flag.NewFlagSet("dht find-records-by-type", flag.ContinueOnError)
-	jsonOut := fs.Bool("json", false, "emit a JSON result envelope instead of human-readable text")
-	identityPath := fs.String("identity", "", "path to a persisted identity seed (default: config dir)")
-	connectTimeout := fs.Duration("connect-timeout", 15*time.Second, "connect timeout")
-	var seeds seedFlag
-	fs.Var(&seeds, "seed", "additional fallback station host[:port], tried in order after <host> if it doesn't answer; repeat for more than one")
-	fs.Usage = func() {
-		fmt.Fprint(fs.Output(), "Usage: macula-cli dht find-records-by-type [flags] <host[:port]> <type>\n\n"+
-			"Lists every record of one type currently visible from the station this\n"+
-			"connects to -- coverage depends on that station's own view of the DHT,\n"+
-			"not the whole mesh. <type> is a known name (procedure_advertisement,\n"+
-			"content_announcement, station_endpoint) or a raw number 0-255. This is\n"+
-			"the discovery entry point: list procedure_advertisement to see every\n"+
-			"capability this station knows about and which realm each is scoped to\n"+
-			"(embedded in procedure_uri, decoded into the realm/procedure fields\n"+
-			"below). Always the DHT's own all-zero realm; there is no -realm flag.\n\nFlags:\n")
-		fs.PrintDefaults()
-	}
-	if err := fs.Parse(args); err != nil {
-		return 2
-	}
-	if fs.NArg() != 2 {
-		fs.Usage()
-		return 2
-	}
-	typ, err := parseRecordType(fs.Arg(1))
-	if err != nil {
-		return report.Fail(*jsonOut, err, nil)
-	}
-
-	ctx := context.Background()
-	session, err := connectForDht(ctx, fs.Arg(0), seeds, *identityPath, *connectTimeout)
-	if err != nil {
-		return report.Fail(*jsonOut, err, nil)
-	}
-	id, _, _ := loadIdentity(*identityPath)
-	defer session.Close("normal", nil, id)
-
-	recs, err := dht.FindRecordsByType(session, id, typ)
-	if err != nil {
-		return report.Fail(*jsonOut, err, nil)
-	}
-
-	recsJSON := make([]dhtRecordJSON, len(recs))
-	for i, rec := range recs {
-		recsJSON[i] = toRecordJSON(rec)
-	}
-	result := dhtFindRecordsByTypeResult{Host: fs.Arg(0), Type: typ, Count: len(recsJSON), Records: recsJSON}
-	report.Ok(*jsonOut, result, func() {
-		if len(recsJSON) == 0 {
-			fmt.Println("no records of this type visible from this station")
-			return
+		result = reportedAll(vs, dropped)
+	default:
+		if result, err = findByType(ctx, p, t); err != nil {
+			return report.Fail(m.jsonOut, err)
 		}
-		for _, r := range recsJSON {
-			printRecordHuman(r)
+	}
+	report.Ok(m.jsonOut, result, func(w io.Writer) {
+		for _, r := range result.Records {
+			fmt.Fprintf(w, "type 0x%02x by %s, expires %d: %s\n", r.Type, r.KeyID, r.ExpiresAt, r.Payload)
 		}
+		fmt.Fprintf(w, "%d records, %d dropped as unverifiable\n", len(result.Records), result.Dropped)
 	})
 	return 0
 }

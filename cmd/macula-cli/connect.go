@@ -2,149 +2,85 @@ package main
 
 import (
 	"context"
-	"encoding/hex"
 	"flag"
 	"fmt"
+	"io"
 	"net"
 	"time"
 
-	"github.com/macula-io/macula-go/connection"
-	"github.com/macula-io/macula-go/transport"
+	"github.com/macula-io/macula-go/identity"
 
 	"github.com/macula-io/macula-cli/internal/report"
 )
 
-// connectResult mirrors the three-stage pipeline a real handshake goes
-// through, so a caller can tell exactly where a failure happened
-// instead of getting one opaque "connect failed." This distinction is
-// the whole point of the command: macula-go's own docs record a
-// real incident where an unhardened identity made QUIC/TLS look
-// perfectly healthy right up until the HELLO silently never arrived,
-// and a separate one where an IPv6-only station with no AAAA record on
-// its hostname made a plain dial hang with no error at all.
+// connectResult is the connect diagnostic: the seed's addresses, and the link
+// to its station, pinned by node_id, with how long each stage took.
 type connectResult struct {
-	Host          string   `json:"host"`
-	Port          uint16   `json:"port"`
-	DNS           dnsStage `json:"dns"`
-	QUIC          stage    `json:"quic"`
-	Hello         stage    `json:"hello"`
-	StationNodeID string   `json:"station_node_id,omitempty"`
-	Accepted      *bool    `json:"accepted,omitempty"`
-	RefusalCode   *int64   `json:"refusal_code,omitempty"`
+	Node      string   `json:"node"`
+	Station   string   `json:"station"`
+	Addresses []string `json:"addresses"`
+	ResolveMs int64    `json:"resolve_ms"`
+	LinkMs    int64    `json:"link_ms"`
+	Up        bool     `json:"up"`
 }
 
-type dnsStage struct {
-	OK         bool     `json:"ok"`
-	A          []string `json:"a,omitempty"`
-	AAAA       []string `json:"aaaa,omitempty"`
-	Error      string   `json:"error,omitempty"`
-	DurationMs int64    `json:"duration_ms"`
-}
-
-type stage struct {
-	OK         bool   `json:"ok"`
-	Error      string `json:"error,omitempty"`
-	DurationMs int64  `json:"duration_ms"`
+// connectStages resolves seed's host, then links key's node to it and
+// reports the link.
+func connectStages(ctx context.Context, m *meshFlags, key *identity.NodeKey) (connectResult, error) {
+	seed := m.seeds[0]
+	var r connectResult
+	r.Station = fmt.Sprintf("%x", seed.NodeID)
+	start := time.Now()
+	addrs, err := net.DefaultResolver.LookupHost(ctx, seed.Host)
+	if err != nil {
+		return r, fmt.Errorf("resolve %s: %w", seed.Host, err)
+	}
+	r.Addresses, r.ResolveMs = addrs, time.Since(start).Milliseconds()
+	start = time.Now()
+	one := *m
+	one.seeds = m.seeds[:1]
+	p, err := one.connect(ctx, key, nil)
+	if err != nil {
+		return r, fmt.Errorf("link to %s:%d as station %x: %w", seed.Host, seed.Port, seed.NodeID[:8], err)
+	}
+	defer p.Close()
+	r.LinkMs = time.Since(start).Milliseconds()
+	r.Node = fmt.Sprintf("%x", p.NodeID())
+	for _, s := range p.Status() {
+		if s.Station == seed.NodeID && s.Up {
+			r.Up = true
+		}
+	}
+	return r, nil
 }
 
 func runConnect(args []string) int {
 	fs := flag.NewFlagSet("connect", flag.ContinueOnError)
-	jsonOut := fs.Bool("json", false, "emit a JSON result envelope instead of human-readable text")
-	identityPath := fs.String("identity", "", "path to a persisted identity seed (default: config dir)")
-	timeout := fs.Duration("timeout", 15*time.Second, "per-stage timeout")
+	var m meshFlags
+	m.register(fs, false)
 	fs.Usage = func() {
-		fmt.Fprint(fs.Output(), "Usage: macula-cli connect [flags] <host[:port]>\n\n"+
-			"Runs the handshake as three separate stages — DNS resolution, raw QUIC/TLS\n"+
-			"dial, and the full CONNECT/HELLO handshake — and reports exactly which stage\n"+
-			"failed, rather than one opaque error.\n\nFlags:\n")
+		fmt.Fprintln(fs.Output(), "usage: macula-cli connect -seed host:port@<node_id> [flags]")
+		fmt.Fprintln(fs.Output(), "       resolves the seed, then links to its station over the macula 12 handshake,")
+		fmt.Fprintln(fs.Output(), "       refusing a station that does not prove the node_id")
 		fs.PrintDefaults()
 	}
-	if err := fs.Parse(args); err != nil {
-		return 2
-	}
-	if fs.NArg() != 1 {
+	if err := fs.Parse(args); err != nil || fs.NArg() != 0 || len(m.seeds) == 0 {
 		fs.Usage()
 		return 2
 	}
-
-	host, port, err := parseHostPort(fs.Arg(0))
+	key, err := m.key()
 	if err != nil {
-		return report.Fail(*jsonOut, err, nil)
+		return report.Fail(m.jsonOut, err)
 	}
-
-	result := connectResult{Host: host, Port: port}
-
-	// Stage 1: DNS.
-	dnsStart := time.Now()
-	ips, dnsErr := net.DefaultResolver.LookupIPAddr(context.Background(), host)
-	result.DNS.DurationMs = time.Since(dnsStart).Milliseconds()
-	if dnsErr != nil {
-		result.DNS.Error = dnsErr.Error()
-		return finishConnect(*jsonOut, result, dnsErr)
-	}
-	result.DNS.OK = true
-	for _, ip := range ips {
-		if ip.IP.To4() != nil {
-			result.DNS.A = append(result.DNS.A, ip.IP.String())
-		} else {
-			result.DNS.AAAA = append(result.DNS.AAAA, ip.IP.String())
-		}
-	}
-
-	// Stage 2: raw QUIC/TLS dial, no macula framing at all yet.
-	quicCtx, quicCancel := context.WithTimeout(context.Background(), *timeout)
-	defer quicCancel()
-	quicStart := time.Now()
-	conn, quicErr := transport.Dial(quicCtx, host, port, transport.WebPKI{})
-	result.QUIC.DurationMs = time.Since(quicStart).Milliseconds()
-	if quicErr != nil {
-		result.QUIC.Error = quicErr.Error()
-		return finishConnect(*jsonOut, result, quicErr)
-	}
-	result.QUIC.OK = true
-	_ = conn.CloseWithError(0, "macula-cli connect: diagnostic dial complete")
-
-	// Stage 3: the full CONNECT/HELLO handshake, on its own fresh
-	// connection (Connect dials internally; reusing the diagnostic one
-	// above isn't exposed by the SDK, and re-dialing keeps this
-	// command a thin, honest wrapper over the public API).
-	id, generated, idErr := loadIdentity(*identityPath)
-	if idErr != nil {
-		return report.Fail(*jsonOut, idErr, nil)
-	}
-	if generated && !*jsonOut {
-		fmt.Println("(generated a new identity — puzzle grinding took a moment)")
-	}
-
-	helloCtx, helloCancel := context.WithTimeout(context.Background(), *timeout)
-	defer helloCancel()
-	helloStart := time.Now()
-	session, helloErr := connection.Connect(helloCtx, host, port, transport.WebPKI{}, id)
-	result.Hello.DurationMs = time.Since(helloStart).Milliseconds()
-	if helloErr != nil {
-		result.Hello.Error = helloErr.Error()
-		return finishConnect(*jsonOut, result, helloErr)
-	}
-	result.Hello.OK = true
-	result.StationNodeID = hex.EncodeToString(session.Station.NodeID)
-	accepted := session.Station.Accepted
-	result.Accepted = &accepted
-	result.RefusalCode = session.Station.RefusalCode
-	_ = session.Close("normal", nil, id)
-
-	return finishConnect(*jsonOut, result, nil)
-}
-
-func finishConnect(jsonOut bool, result connectResult, err error) int {
+	ctx, cancel := context.WithTimeout(context.Background(), m.timeout)
+	defer cancel()
+	r, err := connectStages(ctx, &m, key)
 	if err != nil {
-		return report.Fail(jsonOut, err, nil)
+		return report.Fail(m.jsonOut, err)
 	}
-	report.Ok(jsonOut, result, func() {
-		fmt.Printf("%s:%d\n", result.Host, result.Port)
-		fmt.Printf("  dns    ok  (%d ms) A=%v AAAA=%v\n", result.DNS.DurationMs, result.DNS.A, result.DNS.AAAA)
-		fmt.Printf("  quic   ok  (%d ms)\n", result.QUIC.DurationMs)
-		fmt.Printf("  hello  ok  (%d ms) station=%s accepted=%v\n",
-			result.Hello.DurationMs, result.StationNodeID, *result.Accepted)
+	report.Ok(m.jsonOut, r, func(w io.Writer) {
+		fmt.Fprintf(w, "resolved %v in %d ms\n", r.Addresses, r.ResolveMs)
+		fmt.Fprintf(w, "linked as node %s to station %s in %d ms (up: %v)\n", r.Node, r.Station, r.LinkMs, r.Up)
 	})
 	return 0
 }

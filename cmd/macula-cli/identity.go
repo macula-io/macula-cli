@@ -66,14 +66,18 @@ func runProveOwnership(args []string) int {
 	if err != nil {
 		return report.Usage(m.jsonOut, err)
 	}
+	// Refuse what the signer would refuse before the key is loaded or made.
+	if _, err := ownershipproof.Fields(payload); err != nil {
+		return report.Usage(m.jsonOut, err)
+	}
+	if _, hasCaller := payload.Get("caller"); hasCaller {
+		return report.Usage(m.jsonOut, ownershipproof.ErrCallerField)
+	}
 	key, err := m.key()
 	if err != nil {
 		return report.Fail(m.jsonOut, err)
 	}
 	signed, err := proveOwnership(key, realm, *procedure, payload)
-	if errors.Is(err, ownershipproof.ErrNotAMap) || errors.Is(err, ownershipproof.ErrCallerField) {
-		return report.Usage(m.jsonOut, err)
-	}
 	if err != nil {
 		return report.Fail(m.jsonOut, err)
 	}

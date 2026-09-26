@@ -64,6 +64,15 @@ func (r *realmRefusal) Error() string {
 // Refusal is the realm's error code and the HTTP status it came with.
 func (r *realmRefusal) Refusal() (string, int) { return r.Reason, r.Status }
 
+// excerpt is at most n bytes of b, on one line.
+func excerpt(b []byte, n int) string {
+	text := strings.Join(strings.Fields(string(b)), " ")
+	if len(text) > n {
+		text = text[:n] + "..."
+	}
+	return text
+}
+
 // realmName is -realm as the realm's name, which realm requests need: the
 // proof signs its sha256, and the membership procedure is named under it.
 func realmName(text string) (string, error) {
@@ -73,7 +82,7 @@ func realmName(text string) (string, error) {
 	if _, err := hex32(text); err == nil {
 		return "", errors.New("-realm is the realm's name here (io.macula), not its id: the proof signs the name's sha256")
 	}
-	return text, nil
+	return normalRealmName(text), nil
 }
 
 // requestJoin asks the realm at baseURL for a join session for key's device,
@@ -137,11 +146,12 @@ func realmHTTP(ctx context.Context, client *http.Client, method, url string, bod
 		var refusal struct {
 			Error string `json:"error"`
 		}
-		_ = json.Unmarshal(answer, &refusal)
-		if refusal.Error == "" {
-			refusal.Error = strings.TrimSpace(string(answer))
+		if json.Unmarshal(answer, &refusal) == nil && refusal.Error != "" {
+			return &realmRefusal{Status: res.StatusCode, Reason: refusal.Error}
 		}
-		return &realmRefusal{Status: res.StatusCode, Reason: refusal.Error}
+		// Not the realm's own refusal (a proxy's error page, say): a failure,
+		// with a short excerpt of what came back.
+		return fmt.Errorf("the realm answered HTTP %d: %s", res.StatusCode, excerpt(answer, 200))
 	}
 	return json.Unmarshal(answer, out)
 }

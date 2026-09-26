@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"os"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -14,6 +15,21 @@ import (
 	"github.com/macula-io/macula-go/profile"
 	"github.com/macula-io/macula-go/teststation"
 )
+
+// TestMain points the user config directory at a directory of the test
+// binary's own, so no test can create or read the operator's node key.
+func TestMain(m *testing.M) {
+	dir, err := os.MkdirTemp("", "macula-cli-test-config")
+	if err != nil {
+		panic(err)
+	}
+	for _, name := range []string{"HOME", "XDG_CONFIG_HOME", "AppData"} {
+		_ = os.Setenv(name, dir)
+	}
+	code := m.Run()
+	_ = os.RemoveAll(dir)
+	os.Exit(code)
+}
 
 // testMesh is two in-process macula 12 stations sharing a DHT, and a test
 // realm with one org.

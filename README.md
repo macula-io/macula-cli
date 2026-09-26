@@ -128,7 +128,7 @@ With `-json` every command prints one envelope (`pubsub watch` one per event):
 ```
 
 `kind` is one of `provider_error`, `relay_error`, `stream_error`,
-`realm_refusal`, `timeout`, `no_provider`, `no_realm_key`, `not_found`,
+`identity_mismatch`, `realm_refusal`, `timeout`, `no_provider`, `no_realm_key`, `not_found`,
 `not_shared`, `content_unavailable`, `invalid_argument` and `failed`, taken
 from macula-go's typed errors and the realm's own error codes, never from a
 message. A malformed invocation (a `-json` one included) prints an

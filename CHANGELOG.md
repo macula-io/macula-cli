@@ -24,7 +24,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `identity sign` (the v1 proof realm 12 refuses, macula-cli#1), `content put`
   (now `content share`), and the flags `-direct`, `-realm-ca`, `-org`, `-ucan`.
 - `-json` failures carry `kind` (and a wire `code` and `detail`) instead of
-  BOLT#4 fields.
+  BOLT#4 fields: `provider_error`, `relay_error`, `stream_error`,
+  `identity_mismatch`, `realm_refusal`, `timeout`, `no_provider`,
+  `no_realm_key`, `not_found`, `not_shared`, `content_unavailable`,
+  `invalid_argument`, `failed`. A malformed invocation under `-json` is an
+  `invalid_argument` envelope with exit 2; `-h` exits 0.
+- `serve` reports the calls it answered, and `withdrawn` 0 with
+  `withdraw_error` when withdrawing the procedure failed.
 
 ### Added
 

@@ -81,7 +81,7 @@ func hex32(text string) ([32]byte, error) {
 }
 
 // realmID is a realm given as 64 hex, or by its name, whose id is the
-// name's sha256.
+// sha256 of the name trimmed and lowercased, as the realm computes it.
 func realmID(text string) ([32]byte, error) {
 	if text == "" {
 		return [32]byte{}, errors.New("-realm is required: a realm name (io.macula) or its 64-hex id")
@@ -89,7 +89,12 @@ func realmID(text string) ([32]byte, error) {
 	if id, err := hex32(text); err == nil {
 		return id, nil
 	}
-	return sha256.Sum256([]byte(text)), nil
+	return sha256.Sum256([]byte(normalRealmName(text))), nil
+}
+
+// normalRealmName is a realm name as the realm reads it: trimmed, lowercase.
+func normalRealmName(text string) string {
+	return strings.ToLower(strings.TrimSpace(text))
 }
 
 // realmKey is -realm-key: the key as carried, in hex, or @file holding it.

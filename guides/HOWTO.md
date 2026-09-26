@@ -169,7 +169,7 @@ since the procedure is named under it.
 ```bash
 macula-cli identity prove-ownership -realm io.macula -procedure mcl-graph/learn_link \
   -payload '{"subject": "entity:alpha", "object": "entity:beta"}'
-# {"subject":"entity:alpha","object":"entity:beta","asserted_by":{"identity":"00a1...","proof":{...}}}
+# {"object":"entity:beta","subject":"entity:alpha","asserted_by":{"identity":"00a1...","proof":{...}}}
 ```
 
 Prints the payload with an ownership proof v2 (mcl-om#7): this node's key
@@ -185,7 +185,8 @@ it authenticated.
   `{"ok": true, "data": ...}` or `{"ok": false, "error": {...}}`.
 - `error.kind` is one of `provider_error` (with the provider's `code` and
   `detail`), `relay_error` (`code`), `stream_error` (`code`, `detail`,
-  `relay`), `realm_refusal` (the realm's error as `code`, such as
+  `relay`), `identity_mismatch` (a station that does not prove the pinned
+  node_id), `realm_refusal` (the realm's error as `code`, such as
   `bad_proof`, `session_not_found` or `session_expired`, and the HTTP status
   as `detail`), `timeout`, `no_provider`, `no_realm_key`, `not_found`,
   `not_shared`, `content_unavailable`, `invalid_argument` and `failed`. Match

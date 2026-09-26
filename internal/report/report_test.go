@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/macula-io/macula-go/handshake"
 	"github.com/macula-io/macula-go/pool"
 	"github.com/macula-io/macula-go/stationlink"
 )
@@ -30,6 +31,7 @@ func TestFailuresAreClassifiedByTheirTypeNotTheirText(t *testing.T) {
 		{fmt.Errorf("get: %w", pool.ErrNotShared), Error{Kind: "not_shared"}},
 		{pool.ErrContentUnavailable, Error{Kind: "content_unavailable"}},
 		{testRefusal{}, Error{Kind: "realm_refusal", Code: "bad_proof", Detail: "HTTP 401"}},
+		{errors.Join(context.DeadlineExceeded, fmt.Errorf("dial: %w", handshake.ErrPeerIdentityMismatch)), Error{Kind: "identity_mismatch"}},
 		{errors.New("anything else"), Error{Kind: "failed"}},
 	}
 	for _, c := range cases {

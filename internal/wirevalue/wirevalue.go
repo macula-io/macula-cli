@@ -131,7 +131,8 @@ func write(buf *bytes.Buffer, v cbor.Value) {
 			buf.WriteString(strconv.FormatInt(i, 10))
 			return
 		}
-		// A uint64 beyond int64 (a station's own counters may be): its digits.
+		// A uint64 beyond int64, which a payload cannot hold (the decoder
+		// refuses one) but a value built in Go can: its digits.
 		buf.WriteString(v.String())
 	case cbor.KindFloat:
 		f, _ := v.AsFloat()

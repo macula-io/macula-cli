@@ -43,7 +43,7 @@ func runCall(args []string) int {
 	providerHex := fs.String("provider", "", "call this provider's node_id (64 hex); any trusted provider when absent")
 	fs.Usage = func() {
 		fmt.Fprintln(fs.Output(), "usage: macula-cli call -seed host:port@<node_id> -realm <realm> [-realm-key <hex|@file>] [flags] <procedure>")
-		fmt.Fprintln(fs.Output(), "       a procedure ~/<name> is <name> in this node's own namespace")
+		fmt.Fprintln(fs.Output(), "       a procedure '~/<name>' (quoted) is <name> in this node's own namespace")
 		fs.PrintDefaults()
 	}
 	if code, ok := parse(fs, args, &m.jsonOut, exactly(1)); !ok {

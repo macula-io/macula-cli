@@ -13,6 +13,7 @@ import (
 	"io"
 	"os"
 
+	"github.com/macula-io/macula-go/handshake"
 	"github.com/macula-io/macula-go/pool"
 	"github.com/macula-io/macula-go/stationlink"
 )
@@ -27,7 +28,8 @@ type Envelope struct {
 // Error is a failure: its kind, the provider's, relay's or stream's code and
 // detail when the wire carried one, and the message for people.
 //
-// Kinds: provider_error, relay_error, stream_error, realm_refusal (code: the
+// Kinds: provider_error, relay_error, stream_error, identity_mismatch (a
+// station that does not prove the pinned node_id), realm_refusal (code: the
 // realm's error, detail: the HTTP status), timeout, no_provider,
 // no_realm_key, not_found, not_shared, content_unavailable,
 // invalid_argument, failed.
@@ -101,6 +103,8 @@ func classify(err error) Error {
 		e.Kind, e.Code = "relay_error", relay.Code
 	case errors.As(err, &stream):
 		e.Kind, e.Code, e.Detail, e.Relay = "stream_error", stream.Code, stream.Message, stream.Relay
+	case errors.Is(err, handshake.ErrPeerIdentityMismatch):
+		e.Kind = "identity_mismatch"
 	case errors.As(err, &refused):
 		code, status := refused.Refusal()
 		e.Kind, e.Code, e.Detail = "realm_refusal", code, fmt.Sprintf("HTTP %d", status)

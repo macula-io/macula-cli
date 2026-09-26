@@ -67,7 +67,7 @@ func runServe(args []string) int {
 	forTime := fs.Duration("for", 0, "stop serving after this long (default: until interrupted)")
 	fs.Usage = func() {
 		fmt.Fprintln(fs.Output(), "usage: macula-cli serve -seed host:port@<node_id> -realm <realm> [-realm-key <hex|@file>] [flags] <procedure>")
-		fmt.Fprintln(fs.Output(), "       ~/<name> serves <name> in this node's own namespace, which needs no org and no realm key;")
+		fmt.Fprintln(fs.Output(), "       '~/<name>' (quoted) serves <name> in this node's own namespace, which needs no org and no realm key;")
 		fmt.Fprintln(fs.Output(), "       <org>/<name> needs the org's delegation to this node in the DHT")
 		fs.PrintDefaults()
 	}
@@ -101,7 +101,7 @@ func runServe(args []string) int {
 	defer p.Close()
 	var (
 		mu    sync.Mutex
-		calls []servedCall
+		calls = []servedCall{}
 	)
 	if !m.jsonOut {
 		fmt.Fprintf(os.Stderr, "serving as node %x; interrupt to stop\n", p.NodeID())

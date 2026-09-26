@@ -232,7 +232,7 @@ func (f *fakeRealm) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // checks the proof over it with the carried key.
 func (f *fakeRealm) verify(body []byte) string {
 	var envelope struct {
-		PublicKey string             `json:"public_key"`
+		PublicKey string              `json:"public_key"`
 		Proof     devicerequest.Proof `json:"proof"`
 	}
 	if err := json.Unmarshal(body, &envelope); err != nil {

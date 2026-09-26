@@ -44,15 +44,10 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      # Almost every command in this repo talks to a live macula-station by
-      # design (it's a diagnostic tool for the real mesh, not a library), so
-      # most verification stays "run it against the fleet" -- but three
-      # offline test files exist for the pieces that don't touch the mesh at
-      # all (cmd/macula-cli's identity/call flag parsing, internal/daemon's
-      # local control-socket protocol), and plain `go test ./...` already
-      # excludes every `//go:build live` file (internal/daemon's own
-      # register_direct_live_test.go, which needs a real station and
-      # MACULA_LIVE_STATION) -- nothing extra to gate here.
+      # Every command's core runs against macula-go's in-process teststation
+      # (two macula 12 stations sharing a DHT, and a test realm), and realm
+      # join against an HTTP realm that verifies the proof: no network needed.
+      # The live fleet check is scripts/live_check.sh, run by hand, never here.
       - run: go test ./...
 
   goreleaser-check:

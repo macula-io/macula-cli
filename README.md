@@ -94,6 +94,7 @@ a few seconds). `-ephemeral` uses a key made for the run and never saved;
 | `dht find-record`, `find-records <key>` | Verified records under a storage key |
 | `dht find-records-by-type <type>` | Verified records of a type: `node_record`, `station_endpoint`, `org_directory`, ... |
 | `identity` | This node's key: node_id, key id, profile |
+| `identity prove-ownership` | A payload with an ownership proof v2 (`asserted_by`, mcl-om#7) by which this node authorises every field, for one procedure and realm, once |
 | `realm join` | Ask a realm to admit this device: a human admits it at the printed join URL (`-wait` polls) |
 | `realm status <session>` | A join session's state, and what the realm granted once confirmed |
 | `realm membership` | This node's membership UCAN, over the mesh; the node must be admitted |

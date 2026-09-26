@@ -160,7 +160,22 @@ Asks the realm over the mesh for this node's membership UCAN, with the same
 proof. The node must have been admitted; `-realm` is the realm's name here,
 since the procedure is named under it.
 
-## 10. Scripting
+## 10. `identity prove-ownership`
+
+```bash
+macula-cli identity prove-ownership -realm io.macula -procedure mcl-graph/learn_link \
+  -payload '{"subject": "entity:alpha", "object": "entity:beta"}'
+# {"subject":"entity:alpha","object":"entity:beta","asserted_by":{"identity":"00a1...","proof":{...}}}
+```
+
+Prints the payload with an ownership proof v2 (mcl-om#7): this node's key
+signs every field, the procedure, the realm, a timestamp and a nonce, so a
+service accepts it once, for that procedure, within 60 s, and refuses it with
+any field changed. Send the printed payload as the call's payload. A payload
+carrying `"caller"` is refused: a station replaces that field with the caller
+it authenticated.
+
+## 11. Scripting
 
 - Every command takes `-json` and prints one envelope,
   `{"ok": true, "data": ...}` or `{"ok": false, "error": {...}}`.

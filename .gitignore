@@ -3,3 +3,5 @@
 *.out
 /macula-cli
 /dist/
+/go.work
+/go.work.sum

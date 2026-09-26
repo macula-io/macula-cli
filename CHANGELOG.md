@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Breaking
 
-- macula-cli speaks the macula 12 wire (macula-go v0.15.0) and nothing older:
+- macula-cli speaks the macula 12 wire (macula-go v0.16.0) and nothing older:
   post-quantum identities and key exchange, signed requests, seeds pinned by
   node_id. 0.8.0 and earlier cannot reach the current fleet.
 - Every mesh command takes `-seed host[:port]@<station node_id>` (repeatable)
@@ -31,6 +31,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `realm join`, `realm status`, `realm membership`: joining a realm and asking
   for the membership UCAN, each request signed with realm proof v2
   (macula-go's `devicerequest`, macula-realm#29). Fixes macula-cli#1.
+- `identity prove-ownership`: a payload with an ownership proof v2
+  (`asserted_by`, mcl-om#7), signed with macula-go's `ownershipproof`, which
+  mcl_om 0.32 verifies.
 - `-ephemeral`: a key made for the run and never saved.
 - A procedure `~/<name>` is `<name>` in the node's own namespace.
 - `content share` serves node-served content (macula 12's D27) while it runs.

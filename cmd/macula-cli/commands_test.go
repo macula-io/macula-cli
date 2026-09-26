@@ -17,6 +17,7 @@ import (
 	"github.com/macula-io/macula-go/cbor"
 	"github.com/macula-io/macula-go/devicerequest"
 	"github.com/macula-io/macula-go/identity"
+	"github.com/macula-io/macula-go/ownershipproof"
 	"github.com/macula-io/macula-go/pool"
 	"github.com/macula-io/macula-go/profile"
 	"github.com/macula-io/macula-go/record"
@@ -338,5 +339,32 @@ func TestAMembershipRequestIsSignedOverThePayloadLessItsProof(t *testing.T) {
 	message := devicerequest.Message(public, sent.Realm, devicerequest.ProcedureMembershipUCAN, uint64(ts), [16]byte(nonce), request)
 	if !identity.Verify(message, signature, public, profile.PQPure) {
 		t.Fatal("the membership proof does not verify over the payload less its proof")
+	}
+}
+
+func TestProveOwnershipSignsAPayloadMclOmVerifies(t *testing.T) {
+	key := freshKey(t)
+	realm := sha256.Sum256([]byte("io.macula"))
+	payload := cbor.Map([]cbor.MapEntry{
+		{Key: cbor.Text("subject"), Val: cbor.Text("entity:alpha")},
+		{Key: cbor.Text("weight"), Val: cbor.Int(3)},
+	})
+	signed, err := proveOwnership(key, realm, "mcl-graph/learn_link", payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := ownershipproof.Verify(signed, "mcl-graph/learn_link", realm, profile.PQPure, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id, _ := key.NodeID(); got.Identity != id {
+		t.Fatalf("verified %x, want the key's node", got.Identity)
+	}
+}
+
+func TestProveOwnershipRefusesACallerField(t *testing.T) {
+	payload := cbor.Map([]cbor.MapEntry{{Key: cbor.Text("caller"), Val: cbor.Text("me")}})
+	if _, err := proveOwnership(freshKey(t), [32]byte{}, "p", payload); !errors.Is(err, ownershipproof.ErrCallerField) {
+		t.Fatalf("%v, want ErrCallerField", err)
 	}
 }

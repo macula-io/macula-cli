@@ -13,148 +13,26 @@
 </p>
 
 <p align="center">
-  <strong>Test, monitor, and diagnose the Macula mesh from the command line</strong>
+  <strong>Test, monitor and use the macula 12 mesh from the command line</strong>
 </p>
 
 ---
 
 ## What is macula-cli?
 
-A **scriptable client**, not an operator dashboard — one small Go binary,
-built directly on [`macula-go`](https://github.com/macula-io/macula-go),
-that exercises the real wire protocol against a real
-[macula-station](https://github.com/macula-io/macula-station) and reports
-exactly what happened. No TUI, no interactive mode: the primary consumer is
-expected to be a script or an agent shelling out to it and parsing `--json`
-output, not a human watching a live view. Every command works the same way
-with or without `--json` — human-readable output is a formatting choice, not
-a separate code path.
+A scriptable client of the macula 12 mesh: one Go binary, built on
+[macula-go](https://github.com/macula-io/macula-go), that links to real
+stations and reports exactly what happened. It has no interactive mode by
+design. Its consumers are scripts and agents that parse `-json` output, and
+every command prints the same data either way.
 
-It exists because the SDKs give you clean primitives (connect, call,
-publish/subscribe, content, streaming) but no fleet-facing diagnostics of
-their own — no way to ask "is this station actually reachable," "did this
-stream actually relay across stations," or "did this content round-trip and
-Merkle-verify," without writing a throwaway Go program every time. This tool
-is that throwaway program, built once and kept.
+macula 12 is the post-quantum wire: ML-DSA-87 identities (the ML-DSA-87 +
+RSA-PSS-4096 composite in `pq_hybrid`, the fleet's profile), ML-KEM hybrid key
+exchange, signed requests, and seeds pinned by the node_id each station must
+prove. Releases before 0.9.0 spoke the retired 10.x wire and cannot reach the
+current fleet.
 
-**What it does, concretely:**
-
-- **`connect`** — stages the handshake (DNS, QUIC/TLS, CONNECT/HELLO)
-  separately, so a failure names which stage broke instead of one opaque
-  error.
-- **`call`** — one unary RPC call, JSON args in, JSON payload (or a BOLT#4
-  error) out. `-direct` resolves and dials a station straight from its DHT
-  advertisement instead of depending on gossip; `-ucan` attaches a UCAN
-  token; `-realm-ca`/`-org` verify a direct-dial advertisement's embedded
-  cert chain (Slice 7c Direction B); `-via-daemon` routes the call through
-  a running `daemon` instead of dialing fresh (not composable with
-  `-direct`).
-- **`serve`** — advertises a procedure, answers one inbound CALL, exits;
-  the provider-role counterpart to `call`. Same `-direct`/`-cert-chain`
-  flags as `call`, plus `-require-ucan-issuer` to gate the procedure. `
-  -daemon` registers it with a running `daemon` instead (see below) —
-  persistent, many calls, no exit after the first. `-exec <command>`
-  computes the reply per call (JSON in on stdin, JSON out on stdout)
-  instead of a fixed `-reply`/`-echo`.
-- **`pubsub watch` / `pubsub publish`** — subscribe and stream events as
-  newline-delimited JSON, or publish one event and exit. `watch -daemon`
-  taps into a daemon's own subscription instead of subscribing itself;
-  `pubsub subscribe`/`unsubscribe` (daemon-only, no non-daemon form)
-  start or end a subscription that outlives the command that touched it.
-- **`stream probe`** — opens a Bidi stream across **two different
-  stations** and confirms data actually flows both ways through the relay,
-  not just that the stream opens.
-- **`content probe` / `put` / `get`** — self-contained put+get+verify round
-  trip, or upload/download a real file by its MCID.
-- **`dht find-record` / `find-records` / `find-records-by-type`** — read the
-  mesh's signed DHT record store directly: one record by storage key, every
-  record at a key (the signer-deduped multiset), or every record of a type
-  currently visible from the connecting station. `find-records-by-type
-  procedure_advertisement` is the discovery entry point — every capability
-  a station knows about, with the realm each is scoped to decoded straight
-  out of `procedure_uri` (realm is embedded there, not a separate field; DHT
-  storage itself is always the protocol's own all-zero realm, so none of
-  the three take a `-realm` flag). Each record's signature is checked and
-  reported (`verified`/`verify_error`), never silently assumed good.
-- **`identity`** — prints this machine's local identity (node ID), purely
-  local, no station involved.
-- **`ucan mint` / `ucan inspect`** — mint a UCAN token signed by the local
-  identity, or decode one's claims without checking its signature.
-- **`daemon start` / `status` / `stop`** — macula-cli's optional long-lived
-  mode: one process holds one station connection open, under its own
-  identity (see [Daemon mode](#daemon-mode)), and answers CALLs for
-  whatever `serve -daemon` registers, until stopped. Other `macula-cli`
-  invocations control it over a local Unix domain control socket instead
-  of each dialing the mesh fresh — see [Daemon mode](#daemon-mode) below.
-
-Every failure is reported through Macula's own
-[BOLT#4 error taxonomy](https://github.com/macula-io/macula-go/blob/master/bolt4/bolt4.go)
-(`unknown_next_peer`, `temporary_relay_failure`, etc.) rather than invented
-text, so a caller parsing output gets the same failure vocabulary the wire
-protocol itself uses.
-
----
-
-## Status
-
-**Walking skeleton, now several releases past v0.1.2 — UCAN, direct-dial,
-cert-chain, daemon mode, `dht`, large-payload `-args-file`, `identity sign`,
-and the daemon-registration direct-dial fix have all shipped since. See this
-repo's own [Releases](https://github.com/macula-io/macula-cli/releases) for
-the current tag.**
-All nine commands ran successfully against the real 7-station demo fleet as
-each was built — not batched to the end — including finding and fixing
-several real bugs along the way (`pubsub watch` crashing on a station
-behavior it hadn't accounted for — [HOW-TO guide](guides/HOWTO.md) §4 —
-plus a `SIGPIPE`/`pipefail` bug in `install.sh` and a Windows/macOS
-identity-path bug in `v0.1.0`, both fixed in `v0.1.1`). `identity`,
-`pubsub publish`, and `content put`/`get` were added afterward, driven by
-[`macula-mcp`](https://github.com/macula-io/macula-mcp)'s rework onto this
-CLI, and shipped in `v0.1.2`. `ucan`/`-direct`/`-cert-chain`/
-`-require-ucan-issuer` (on `call`/`serve`) and daemon mode (`daemon`,
-`serve -daemon`, then `call -via-daemon` and `pubsub subscribe`/`watch
--daemon`/`unsubscribe`) followed, matching `macula-go`'s own
-direct-dial, UCAN, cert-chain, and `ServeForever` additions. The daemon's
-three-Session split (see [Daemon mode](#daemon-mode)) was itself a bug fix,
-found live: a first draft sharing one Session between serving and
-`call -via-daemon` intermittently stole its own reply frames. `dht
-find-record`/`find-records`/`find-records-by-type` followed, wrapping
-`macula-go`'s existing `dht.FindRecord`/`FindRecords`/`FindRecordsByType`
-(itself already complete — this was purely a missing CLI surface). They answer
-whether a capability that `call` cannot reach is in the DHT at all, under
-any realm. CI checks
-`gofmt`/`vet`/`build`/`go test` plus a GoReleaser snapshot build, `shellcheck`
-on the install/uninstall scripts, and a PowerShell parse-check. Almost every
-command still talks to a live station by design and its own verification
-stays "run it against the fleet," same convention `macula-go`'s own
-`live`-tagged tests follow (this repo's own live test,
-`internal/daemon/register_direct_live_test.go`, needs `-tags live` and a real
-station, so plain `go test ./...` in CI never touches the mesh) -- three
-files are the deliberate exception, for bugs that never touched the mesh at
-all: `internal/daemon/pubsub_test.go`, added alongside the
-`watchForDisconnect` fix below (a `net.Pipe()`-backed test for exact
-byte-level control-socket timing a fleet run can't deterministically
-reproduce), plus `cmd/macula-cli/identity_test.go` and
-`cmd/macula-cli/call_test.go` for flag parsing.
-
-`macula-go` is now tagged too (`v0.3.0`, current as of the rename below) —
-this repo pins an exact tag in `go.mod` rather than a floating pseudo-version,
-same as any other dependency.
-
-**2026-08-30: every `macula-{language}-sdk` sibling repo dropped the
-redundant "-sdk" suffix** (`macula-go-sdk`→`macula-go`,
-`macula-rust-sdk`(-ffi)→`macula-rust`(-ffi), `macula-php-sdk`→`macula-php`,
-`macula-dotnet-sdk`→`macula-dotnet`). This repo's own name is unaffected
-(it was never `macula-cli-sdk`); only its `go.mod` dependency and doc
-links moved to `github.com/macula-io/macula-go`.
-
-**Not yet built:** anything bridging macula-station's loopback-only admin
-API (`/health`, `/wire`, `/dht/stats`, ...) — that needs an SSH tunnel per
-station and is deliberately out of scope for now.
-
----
-
-## Quick start
+## Install
 
 **Linux / macOS:**
 
@@ -168,269 +46,119 @@ curl -fsSL https://raw.githubusercontent.com/macula-io/macula-cli/master/install
 irm https://raw.githubusercontent.com/macula-io/macula-cli/master/install.ps1 | iex
 ```
 
-Both pull the release archive matching your OS/arch from
-[GitHub Releases](https://github.com/macula-io/macula-cli/releases),
-verify it against the release's own `checksums.txt`, and install
-`macula-cli` (`$HOME/.local/bin` on Linux/macOS, `%LOCALAPPDATA%\macula-cli`
-on Windows — override with `MACULA_CLI_INSTALL_DIR`). Prefer building from
-source, or already have Go? `go install
-github.com/macula-io/macula-cli/cmd/macula-cli@latest` works too.
+Both download the release archive for your OS and architecture from
+[GitHub Releases](https://github.com/macula-io/macula-cli/releases), check it
+against the release's `checksums.txt`, and install `macula-cli`
+(`$HOME/.local/bin` on Linux and macOS, `%LOCALAPPDATA%\macula-cli` on Windows;
+`MACULA_CLI_INSTALL_DIR` overrides). With Go 1.27:
+`go install github.com/macula-io/macula-cli/cmd/macula-cli@latest`.
+
+The public stations have IPv6 addresses only: macula-cli needs a working IPv6
+route and outbound UDP to port 4433.
+
+`uninstall.sh` / `uninstall.ps1` (same path) remove the binary and leave the
+node key in place; `--purge` / `-Purge` removes it too.
+
+## Quick start
+
+Every station is pinned: `-seed host[:port]@<station node_id hex>`. A realm is
+`-realm` (its name, `io.macula`, or its 64-hex id, which is the name's sha256),
+trusted with `-realm-key` (the realm key as carried, in hex, or `@file`).
 
 ```bash
-macula-cli connect station-de-frankfurt.macula.io
+SEED='station-fi-helsinki.macula.io:4433@004d1f470097ccf8826ce291900e882fdb1f20375e53901facaec0f23eb4efd8'
+
+macula-cli connect -seed "$SEED"
+macula-cli dht find-records-by-type -seed "$SEED" node_record
+macula-cli call -seed "$SEED" -realm io.macula -realm-key @io.macula.key -payload '"hello"' mcl-echo/echo
 ```
 
-The public stations have IPv6 addresses only, so `macula-cli` needs a network with
-a working IPv6 route and outbound UDP to port 4433 (QUIC). On an IPv4-only network
-the dial fails with `network is unreachable`.
+The first command that needs a key creates one (`identity.key` in the user
+config directory's `macula-cli/`; it solves the admission puzzle, which takes
+a few seconds). `-ephemeral` uses a key made for the run and never saved;
+`-identity <file>` uses another file.
 
-To remove it again: `curl -fsSL .../uninstall.sh | bash` (or
-`irm .../uninstall.ps1 | iex` on Windows) — same repo path, `uninstall.sh`/
-`uninstall.ps1` instead of `install`. Leaves the persisted identity alone
-by default (add `--purge`/`-Purge` to remove that too); see the
-[HOW-TO guide](guides/HOWTO.md) §1.
+## Commands
 
-**Read the [HOW-TO guide](guides/HOWTO.md) for the full command/flag
-reference before scripting against this** — it covers every flag, real
-example output for each command, and two gotchas worth knowing up front:
-Go's `flag` package requires flags before positional arguments, and
-Macula's wire protocol has no `bool` type at all (a JSON boolean in `--args`
-is rejected, not silently coerced).
+| Command | What it does |
+|---------|--------------|
+| `connect` | Resolve the seed, then link to its station over the macula 12 handshake, refusing a station that does not prove the pinned node_id |
+| `call <procedure>` | Call a procedure by direct dial: to any trusted provider, or `-provider <node_id>` |
+| `serve <procedure>` | Serve a procedure, echoing each payload or answering `-reply`, until stopped (`-once`, `-for`) |
+| `pubsub publish <topic>` | Publish one payload |
+| `pubsub watch <topic>` | Print each verified event (`-count`, `-for`) |
+| `stream probe` | A bidirectional streaming round trip between two fresh nodes, through their stations |
+| `content share <file>` | Serve a file from this node and print its content id, while it runs |
+| `content get <mcid>` | Fetch content from the nodes that share it, checked against its id |
+| `content probe` | Share and fetch between two fresh nodes |
+| `dht find-record`, `find-records <key>` | Verified records under a storage key |
+| `dht find-records-by-type <type>` | Verified records of a type: `node_record`, `station_endpoint`, `org_directory`, ... |
+| `identity` | This node's key: node_id, key id, profile |
+| `realm join` | Ask a realm to admit this device: a human admits it at the printed join URL (`-wait` polls) |
+| `realm status <session>` | A join session's state, and what the realm granted once confirmed |
+| `realm membership` | This node's membership UCAN, over the mesh; the node must be admitted |
 
----
+A procedure `~/<name>` is `<name>` in the node's own namespace, which needs no
+org and no realm key: `serve ~/echo` on one node and `call ~<its node_id>/echo`
+on another. An `<org>/<name>` procedure is served only by a node the org has
+delegated it to, and called only with the realm's key pinned.
 
-## Architecture
+Every request to a realm (`realm join`, `realm membership`) carries a realm
+proof v2 (macula-realm#29): the key signs the whole request, the realm, the
+procedure, a timestamp and a nonce, so a relay cannot change what the
+admitter reads. macula-cli never admits anything: a person does, at the join
+URL.
 
+Payloads are JSON on the command line and in the output. macula's wire has no
+boolean (send 0 and 1) and carries integers within int64; bytes are
+`{"$bytes": "<base64>"}` both ways, so a value received can be sent back
+unchanged.
+
+See the [HOW-TO guide](guides/HOWTO.md) for every flag, and for scripting
+against `-json`.
+
+## Output and failures
+
+With `-json` every command prints one envelope (`pubsub watch` one per event):
+
+```json
+{"ok": true, "data": ...}
+{"ok": false, "error": {"kind": "provider_error", "code": "handler_error", "detail": "...", "message": "..."}}
 ```
-cmd/macula-cli/          one file per subcommand, single package — argument-parsing
-                          glue thin enough that it doesn't earn per-command packages
-internal/identitystore/  load-or-mint a puzzle-hardened identity, persisted to disk
-internal/report/         one --json envelope / human-text choice, BOLT#4-aware errors
-internal/wirevalue/      JSON <-> cbor.Value bridge for --args and output
-internal/daemon/         daemon mode: three long-lived Sessions (serve/call/subscribe),
-                          the procedure/subscription registries, and the control socket
-                          every daemon-aware subcommand talks to
-```
 
-| Package | Role |
-|---|---|
-| `cmd/macula-cli` | One file per subcommand (`connect`, `call`, `serve`, `pubsub`, `stream`, `content`, `identity`, `ucan`, `daemon`) and their flag parsing. Thin — every one-shot command is a short, direct sequence of real SDK calls. |
-| `internal/identitystore` | Loads a persisted identity or mints a fresh puzzle-hardened one (`identity.Generate` — never the unhardened path). |
-| `internal/report` | Shared `--json` / human-text output, surfaces BOLT#4 code/name/retryable for wire-level failures. |
-| `internal/wirevalue` | Converts between JSON (what a human or an agent types/reads) and `cbor.Value` (what the wire actually carries) — deliberately narrow, since Macula's CBOR has no `bool` and no float/int ambiguity the way JSON does. |
-| `internal/daemon` | `Server` holds one Session under the daemon's own identity (see [Daemon mode](#daemon-mode)) plus mutex-guarded procedure and subscription registries, driving `macula-go`'s `ServeForever`; when that Session's connection dies it redials the seed pool and replays advertisements and subscriptions together (see [Resilience](#daemon-mode)). `Do`/`Watch`/`Listen`/`SocketPath` are the newline-delimited-JSON control-socket client and server halves `cmd/macula-cli`'s daemon-aware commands share. |
+`kind` is one of `provider_error`, `relay_error`, `stream_error`, `timeout`,
+`no_provider`, `no_realm_key`, `not_found`, `invalid_argument` and `failed`,
+taken from macula-go's typed errors, never from their text. A malformed
+invocation exits 2, a failure 1.
 
----
-
-## Daemon mode
-
-Every command above is one-shot: connect, do the one thing, exit. That's
-deliberate for `call`/`pubsub publish`/`content put`, but `serve`'s own
-one-shot shape means a real long-lived server means wrapping it in your own
-shell loop, and there's no way to keep a procedure re-advertised or a
-subscription alive without a process staying up the whole time.
-
-**Daemon mode** is the alternative: one `macula-cli daemon start` process
-holds a station connection open, and other `macula-cli` invocations control
-it over a local Unix domain socket instead of each dialing the mesh fresh —
-the same shape as `ssh-agent` or `dockerd`, not a second product.
+## Build and test
 
 ```bash
-# Start the daemon (foreground -- pair with a process supervisor for
-# unattended use; Ctrl-C/SIGTERM/"daemon stop" all stop it cleanly).
-# -seed adds fallback stations the daemon redials (and re-registers
-# everything against) if its current one goes down -- see "Resilience:
-# multi-seed dial and reconnect" below.
-macula-cli daemon start -seed station-de-nuremberg.macula.io:4433 \
-  -seed station-de-falkenstein.macula.io:4433 \
-  station-de-frankfurt.macula.io:4433 &
-
-# Register a procedure -- answers as many calls as arrive, not just one.
-macula-cli serve -daemon -reply '{"pong":1}' my.echo
-
-# Or -exec: a real, per-call computed reply instead of a fixed one --
-# the script gets the call's JSON payload on stdin, its stdout becomes
-# the reply. A non-zero exit, a timeout, or invalid JSON on stdout all
-# become a normal ERROR reply to the caller, not a crash of the daemon
-# or any other procedure it's serving. A map payload carries the caller
-# the daemon verified, as "caller".
-macula-cli serve -daemon -exec './double.sh' my.double
-
-# From anywhere else: ordinary "call" reaches it exactly like any other
-# advertised procedure -- the daemon is invisible to callers. Or route
-# through the daemon's own connection instead of dialing fresh:
-macula-cli call station-de-frankfurt.macula.io:4433 my.echo
-macula-cli call -via-daemon my.echo
-
-# A subscription outlives the command that created it -- "watch" taps in
-# and out freely without ending it.
-macula-cli pubsub subscribe my.topic
-macula-cli pubsub watch -daemon my.topic &
-macula-cli pubsub unsubscribe my.topic
-
-# Inspect or stop it.
-macula-cli daemon status
-macula-cli serve -daemon -stop my.echo
-macula-cli daemon stop
+go build ./cmd/macula-cli
+go test ./...
 ```
 
-**One Session, under the daemon's own identity.** A daemon connects once.
-That one Session serves every registered procedure, makes every
-`call -via-daemon` call and carries every `pubsub subscribe`d topic, all at
-the same time: `macula-go` routes each reply, event and inbound CALL on a
-Session to whoever is waiting for it. Every outgoing call and subscription
-is made as the daemon's own persisted identity, the one `daemon status`
-reports, so a token minted for that identity (an audience-bound UCAN) is
-accepted and a provider that checks its caller sees that identity.
+Every command's core is tested against macula-go's in-process teststation (two
+macula 12 stations sharing a DHT, and a test realm with one org), and
+`realm join` against an HTTP realm that verifies the proof as macula-realm
+does. No test touches the network. `scripts/live_check.sh` runs one check
+against a fleet station with keys made for the run: connect, node records,
+`mcl-echo/echo`, and a watch hearing one publication.
 
-**The control socket has no authentication of its own.** Like `ssh-agent`,
-it relies on the operating system: the socket lives in a directory only its
-owner can use, so anything running as that same user can call, serve and
-subscribe as the daemon's identity through it. Run the daemon as a user that
-only trusted processes run as. On Windows that directory check does nothing
-and relies on `%TEMP%` being under the user's own profile, so a daemon run as
-a service with a shared `TEMP` needs its `-socket` in a directory only that
-service account can reach.
-
-**Resilience: multi-seed dial and reconnect.** `call`, `pubsub publish`,
-`pubsub watch`, `dht find-*`, `serve`, and `daemon start` all accept a
-repeatable `-seed host[:port]` flag: additional stations tried, in order,
-after the main `<host[:port]>` if it doesn't answer. For a one-shot command
-that's the whole story -- first seed that answers wins, matching
-`macula-go`'s own `connection.ConnectSeeds`. For `daemon start`, it's more:
-if the daemon's Session loses its connection later -- the station
-restarted, a network blip, anything -- it redials the seed pool (rotating
-whichever seed just failed toward the back) and replays its state onto the
-fresh connection: every registered procedure re-`ADVERTISE`d and every
-subscribed topic re-`SUBSCRIBE`d, together. A
-served procedure or an active subscription survives a station bounce
-without anything re-running `serve`/`pubsub subscribe` by hand. This is
-the same respawn-and-replay shape the reference Erlang SDK's own client
-pool (`macula_client.erl`) has always had; without at least one `-seed`,
-a `daemon start` with just one station is exactly as fragile as it was
-before this existed. Pass real, DNS-resolvable fallbacks -- a seed that
-doesn't exist fails the same way a seed that's merely down does, so
-verify each one resolves before relying on it. Three total (the main
-host plus two `-seed`s) is a reasonable floor for a daemon that matters
-staying reachable.
-
-**A `pubsub watch -daemon` tap silently died within microseconds for a
-long topic name, fixed 2026-08-31.** The disconnect-detector that lets
-`handleWatch` notice a tap process going away read one raw byte off the
-control-socket connection and treated ANY byte as "gone" -- but
-`json.Encoder.Encode` (every client request's own writer) always
-appends one trailing `\n`, which `Decode()` does not itself consume.
-For a short request that trailing byte was reliably swallowed by the
-SAME read that decoded the request body, so nothing was ever left to
-find; cross whatever internal chunk-size boundary the request happens
-to land on (reproduced live with a 74-byte pubsub topic -- 73 worked,
-74 didn't, deterministically) and that newline is still genuinely
-unread when the detector starts, closing the tap before any real event
-could ever arrive -- with no error, just silence. Fixed by having the
-detector tolerate exactly that one expected leftover byte instead of
-treating any byte as a disconnect signal; see
-`internal/daemon/pubsub.go`'s `watchForDisconnect` for the full
-mechanism and receipts, and its own test file for the regression
-coverage. If you're on a version older than this fix and a daemon-tap
-watch on a long topic name never receives anything, this is why.
-
-More than one daemon instance can run side by side via `-socket-name`
-(e.g. one per identity/realm) — every daemon-aware command takes it, and
-`-socket` overrides the derived path outright. The control socket lives
-under `$XDG_RUNTIME_DIR/macula-cli` when set (systemd-logind's per-UID
-tmpfs, already 0700 and correctly owned before any session starts), or a
-UID-scoped `os.TempDir()` directory otherwise — not the user config
-directory `identitystore` uses for the identity file, since a Unix domain
-socket path is capped at roughly 108 bytes and a config-dir-rooted path
-can exceed that depending on `$HOME` (found live, not assumed). On the
-`os.TempDir()` fallback, a shared, world-writable temp directory (`/tmp`
-on a typical multi-user Linux box) means another local user could
-pre-create the target directory before this daemon does, so its
-ownership and permissions are verified before trusting it, not just
-assumed from `os.MkdirAll` succeeding — refused live against a
-deliberately world-writable planted directory during testing.
-
-`serve -daemon`'s registration flags (`-direct`, `-cert-chain`,
-`-require-ucan-issuer`, `-reply`/`-echo`/`-exec`/`-exec-timeout`) are the
-same ones the one-shot `serve` takes; it just sends them to the daemon
-instead of dialing the mesh itself and takes no `<host[:port]>` (the
-daemon already has one).
-
-`-direct` on a daemon registration publishes the direct-dial DHT record
-over the daemon's **calling** session, not its serving one. Until
-2026-09-03 it used the serving session, whose receive loop belongs to
-`ServeForever`, so the `put_record` reply was consumed there and every
-`serve -daemon -direct` failed with `dht: put_record: connection: read
-stream: deadline exceeded` while the one-shot `serve -direct` worked.
-The record is still signed by, and names, the daemon's serving identity
-and station; only the carrier changed. Pinned by
-`internal/daemon/register_direct_live_test.go` (`go test -tags live -run
-Direct ./internal/daemon`, needs a station, `MACULA_LIVE_STATION`
-overrides the default Frankfurt one).
-
-**`-exec` is the only registration mode that computes anything per
-call** — `-reply`/`-echo` both answer from something already known at
-registration time (a fixed payload, or the caller's own payload bounced
-back), since neither this control protocol nor the daemon itself has any
-other way to hand a registration a live answer. `-exec` runs the given
-shell command once per inbound CALL (`sh -c` on Linux/macOS, `cmd /C` on
-Windows), writing the payload as one JSON document to its stdin and
-reading its entire stdout back as the reply (empty stdout replies
-`null`). A map payload carries the caller the daemon's session verified
-under `"caller"`, as `0x` hex, in place of any `"caller"` the sender
-put there. Every procedure a daemon serves is answered by one serve loop,
-one call at a time, so a hung exec would block every
-OTHER registered procedure too, not just its own, so `-exec-timeout`
-(10s default) kills it and turns the call into a normal ERROR reply
-instead. A non-zero exit or invalid JSON on stdout do the same — none of
-the three can crash the shared serve loop, verified live: three
-procedures registered to fail three different ways (non-zero exit,
-non-JSON stdout, a `sleep` past its timeout) all correctly answered
-their callers with an ERROR while a fourth, working procedure kept
-computing real per-call replies throughout.
-
----
-
-## Build & test
-
-```bash
-go build ./...
-go vet ./...
-gofmt -l .
-```
-
-No unit tests: every command talks to a live station by design. Verify a
-change by actually running the affected command against the fleet
-(`station-de-frankfurt.macula.io:4433` is the default demo station) — see
-the [HOW-TO guide](guides/HOWTO.md) for real example invocations to compare
-against.
-
----
-
-## Documentation
-
-| Guide | Description |
-|---|---|
-| [HOW-TO Guide](guides/HOWTO.md) | Full command/flag reference, real example output, gotchas found live-testing each command, BOLT#4 error troubleshooting |
-
----
+Releases: a `v*` tag builds Linux, macOS and Windows binaries for amd64 and
+arm64 with goreleaser and attaches them, with `checksums.txt`, to the GitHub
+release.
 
 ## Relationship to other repos
 
-| Repo | Role |
-|---|---|
-| [`macula-io/macula-go`](https://github.com/macula-io/macula-go) | The SDK every command in this repo is built directly on — identity, wire protocol, QUIC transport. |
-| [`macula-io/macula-station`](https://github.com/macula-io/macula-station) | The relay station this tool connects to and diagnoses. Its own `docs/` incident writeups are useful context for what a failure here might mean station-side. |
-| `macula-apps/macula-cam2me` | The real pain that motivated this tool: mesh-connectivity issues discovered building a mobile app with no independent way to test the mesh outside the running app. |
-
----
+- [macula-go](https://github.com/macula-io/macula-go): the macula 12 node this
+  CLI drives, and its teststation.
+- [macula-station](https://github.com/macula-io/macula-station): the stations
+  it links to.
+- [macula-realm](https://github.com/macula-io/macula-realm): the realm that
+  admits devices and issues membership.
 
 ## License
 
-Dual-licensed under [Apache-2.0](LICENSE-APACHE) or [MIT](LICENSE-MIT), your choice.
-
----
-
-<p align="center">
-  <sub>Built on macula-go</sub>
-</p>
+Apache-2.0 OR MIT, at your option. See [LICENSE-APACHE](LICENSE-APACHE) and
+[LICENSE-MIT](LICENSE-MIT).

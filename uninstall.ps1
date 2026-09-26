@@ -1,5 +1,5 @@
 # Uninstalls macula-cli: removes the binary install.ps1 placed. Leaves the
-# persisted identity ($env:AppData\macula-cli\identity.seed -- Go's
+# persisted identity ($env:AppData\macula-cli\identity.key -- Go's
 # os.UserConfigDir() resolves to %AppData%, NOT %LOCALAPPDATA% where the
 # binary itself lives, a real distinction caught writing this script) alone
 # by default -- it took real puzzle-grinding work to generate and
@@ -27,7 +27,9 @@ $BinPath = Join-Path $InstallDir "macula-cli.exe"
 # running program persists its identity via Go's os.UserConfigDir(),
 # which resolves to %AppData% (roaming) on Windows -- a different
 # directory, not a subfolder of $InstallDir.
-$IdentityPath = Join-Path "$env:AppData\macula-cli" "identity.seed"
+# The directory holds identity.key (macula 12), and identity.seed if a 10.x
+# release ran here; -Purge removes it whole, as uninstall.sh does.
+$IdentityDir = "$env:AppData\macula-cli"
 
 if (Test-Path $BinPath) {
     Remove-Item -Force $BinPath
@@ -37,12 +39,12 @@ if (Test-Path $BinPath) {
 }
 
 if ($Purge) {
-    if (Test-Path $IdentityPath) {
-        Remove-Item -Force $IdentityPath
-        Write-Host "removed $IdentityPath (-Purge: persisted identity deleted too)"
+    if (Test-Path $IdentityDir) {
+        Remove-Item -Recurse -Force $IdentityDir
+        Write-Host "removed $IdentityDir (-Purge: persisted identity deleted too)"
     } else {
-        Write-Host "no identity file found at $IdentityPath"
+        Write-Host "no identity directory found at $IdentityDir"
     }
-} elseif (Test-Path $IdentityPath) {
-    Write-Host "left $IdentityPath in place (persisted identity) -- pass -Purge to remove it too"
+} elseif (Test-Path $IdentityDir) {
+    Write-Host "left $IdentityDir in place (persisted identity) -- pass -Purge to remove it too"
 }

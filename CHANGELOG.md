@@ -5,6 +5,38 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Breaking
+
+- macula-cli speaks the macula 12 wire (macula-go v0.15.0) and nothing older:
+  post-quantum identities and key exchange, signed requests, seeds pinned by
+  node_id. 0.8.0 and earlier cannot reach the current fleet.
+- Every mesh command takes `-seed host[:port]@<station node_id>` (repeatable)
+  instead of a positional host, and `-realm <name or id>` with
+  `-realm-key <hex|@file>`.
+- The node key is `identity.key`, a macula 12 key (`pq_hybrid` by default,
+  `-profile pq_pure`). The 10.x `identity.seed` is not read; a file holding one
+  is refused, naming it.
+- Removed: the daemon (`daemon start|status|stop`, `serve -daemon`,
+  `call -via-daemon`, `pubsub subscribe|unsubscribe`, `watch -daemon`),
+  `ucan mint|inspect` (the Ed25519 UCAN nothing in macula 12 consumes),
+  `identity sign` (the v1 proof realm 12 refuses, macula-cli#1), `content put`
+  (now `content share`), and the flags `-direct`, `-realm-ca`, `-org`, `-ucan`.
+- `-json` failures carry `kind` (and a wire `code` and `detail`) instead of
+  BOLT#4 fields.
+
+### Added
+
+- `realm join`, `realm status`, `realm membership`: joining a realm and asking
+  for the membership UCAN, each request signed with realm proof v2
+  (macula-go's `devicerequest`, macula-realm#29). Fixes macula-cli#1.
+- `-ephemeral`: a key made for the run and never saved.
+- A procedure `~/<name>` is `<name>` in the node's own namespace.
+- `content share` serves node-served content (macula 12's D27) while it runs.
+- Tests for every command's core against macula-go's in-process teststation,
+  and `scripts/live_check.sh` for one check against a fleet station.
+
 ## [0.8.0] - 2026-09-15
 
 ### Breaking

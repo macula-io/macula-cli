@@ -52,9 +52,11 @@ func runProveOwnership(args []string) int {
 		fmt.Fprintln(fs.Output(), "       every field, for that procedure and realm, once; send it within 60 s")
 		fs.PrintDefaults()
 	}
-	if err := fs.Parse(args); err != nil || fs.NArg() != 0 || *procedure == "" || (*payloadText == "" && *payloadFile == "") {
-		fs.Usage()
-		return 2
+	if code, ok := parse(fs, args, &m.jsonOut, exactly(0)); !ok {
+		return code
+	}
+	if *procedure == "" || (*payloadText == "" && *payloadFile == "") {
+		return usageFailure(fs, args, &m.jsonOut, errors.New("-procedure and -payload (or -payload-file) are required"))
 	}
 	payload, err := payloadFlag(*payloadText, *payloadFile)
 	if err != nil {
@@ -93,9 +95,8 @@ func runIdentity(args []string) int {
 		fmt.Fprintln(fs.Output(), "       macula-cli identity prove-ownership -h: sign a payload's asserted_by (ownership proof v2)")
 		fs.PrintDefaults()
 	}
-	if err := fs.Parse(args); err != nil || fs.NArg() != 0 {
-		fs.Usage()
-		return 2
+	if code, ok := parse(fs, args, &m.jsonOut, exactly(0)); !ok {
+		return code
 	}
 	key, err := m.key()
 	if err != nil {

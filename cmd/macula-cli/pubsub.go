@@ -68,8 +68,7 @@ func watch(ctx context.Context, p *pool.Pool, realm [32]byte, topic string, coun
 
 func runPubsub(args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: macula-cli pubsub publish|watch ...")
-		return 2
+		return unknownSubcommand("pubsub", args, "publish, watch")
 	}
 	switch args[0] {
 	case "publish":
@@ -77,8 +76,7 @@ func runPubsub(args []string) int {
 	case "watch":
 		return runWatch(args[1:])
 	}
-	fmt.Fprintf(os.Stderr, "macula-cli pubsub: unknown subcommand %q (publish, watch)\n", args[0])
-	return 2
+	return unknownSubcommand("pubsub", args, "publish, watch")
 }
 
 func runPublish(args []string) int {
@@ -92,9 +90,8 @@ func runPublish(args []string) int {
 		fmt.Fprintln(fs.Output(), "usage: macula-cli pubsub publish -seed host:port@<node_id> -realm <realm> [flags] <topic>")
 		fs.PrintDefaults()
 	}
-	if err := fs.Parse(args); err != nil || fs.NArg() != 1 {
-		fs.Usage()
-		return 2
+	if code, ok := parse(fs, args, &m.jsonOut, exactly(1)); !ok {
+		return code
 	}
 	payload, err := payloadFlag(*payloadText, *payloadFile)
 	if err != nil {
@@ -127,9 +124,8 @@ func runWatch(args []string) int {
 		fmt.Fprintln(fs.Output(), "       prints each verified event as it arrives; with -json, one envelope per event")
 		fs.PrintDefaults()
 	}
-	if err := fs.Parse(args); err != nil || fs.NArg() != 1 {
-		fs.Usage()
-		return 2
+	if code, ok := parse(fs, args, &m.jsonOut, exactly(1)); !ok {
+		return code
 	}
 	realm, err := realmID(m.realm)
 	if err != nil {

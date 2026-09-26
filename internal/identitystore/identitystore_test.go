@@ -38,8 +38,29 @@ func TestAKeyOfTheOtherProfileIsRefused(t *testing.T) {
 	if _, _, err := LoadOrCreate(path, profile.PQPure); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := LoadOrCreate(path, profile.PQHybrid); err == nil {
+	_, _, err := LoadOrCreate(path, profile.PQHybrid)
+	if err == nil {
 		t.Fatal("a pq_pure key loaded as pq_hybrid")
+	}
+	if strings.Contains(err.Error(), "move it aside") || !strings.Contains(err.Error(), "-profile") {
+		t.Fatalf("%v: a key of the other profile is the user's identity; say -profile, never move it aside", err)
+	}
+}
+
+func TestAKeyFileOthersCanReadIsRefusedNamingTheFix(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("mode bits do not govern key files on Windows")
+	}
+	path := filepath.Join(t.TempDir(), "identity.key")
+	if _, _, err := LoadOrCreate(path, profile.PQPure); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := LoadOrCreate(path, profile.PQPure)
+	if err == nil || !strings.Contains(err.Error(), "chmod 600") || strings.Contains(err.Error(), "move it aside") {
+		t.Fatalf("%v, want the permission named with its fix", err)
 	}
 }
 

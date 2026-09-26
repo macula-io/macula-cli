@@ -30,6 +30,10 @@ macula-cli identity
 | `-timeout <duration>` | how long to wait for the first link, and for each call (30s) |
 | `-json` | one JSON envelope on stdout |
 
+Quote a procedure that starts with `~`: `'~/echo'` is `echo` in this node's
+own namespace, and `'~<node_id>/echo'` names it in another node's. Unquoted,
+the shell turns `~/echo` into a path under your home directory.
+
 A 10.x `identity.seed` is not a macula 12 key: pointing `-identity` at one is
 refused, naming the file. Move it aside and a new key is created.
 
@@ -66,7 +70,7 @@ dialed pinned.
 ## 4. `serve`
 
 ```bash
-macula-cli serve -seed "$SEED" -realm io.macula ~/echo          # own namespace: no org, no realm key
+macula-cli serve -seed "$SEED" -realm io.macula '~/echo'        # own namespace: no org, no realm key
 macula-cli serve -seed "$SEED" -realm io.macula -realm-key @k -reply '{"ok": 1}' acme/status
 ```
 
@@ -181,9 +185,15 @@ it authenticated.
   `{"ok": true, "data": ...}` or `{"ok": false, "error": {...}}`.
 - `error.kind` is one of `provider_error` (with the provider's `code` and
   `detail`), `relay_error` (`code`), `stream_error` (`code`, `detail`,
-  `relay`), `timeout`, `no_provider`, `no_realm_key`, `not_found`,
-  `invalid_argument` and `failed`. Match the kind, never the message.
-- Exit codes: 0 success, 1 failure, 2 a malformed invocation.
+  `relay`), `realm_refusal` (the realm's error as `code`, such as
+  `bad_proof`, `session_not_found` or `session_expired`, and the HTTP status
+  as `detail`), `timeout`, `no_provider`, `no_realm_key`, `not_found`,
+  `not_shared`, `content_unavailable`, `invalid_argument` and `failed`. Match
+  the kind and code, never the message.
+- Exit codes: 0 success (and `-h`), 1 failure, 2 a malformed invocation,
+  which under `-json` is an `invalid_argument` envelope too.
+- `serve` reports the calls it answered even when withdrawing the procedure
+  fails at the end: `withdrawn` is 0 then, with `withdraw_error`.
 - Payloads: JSON with no booleans (send 0 and 1), integers within int64,
   bytes as `{"$bytes": "<base64>"}`. Output uses the same forms, so a result
   can be sent back as a payload unchanged.

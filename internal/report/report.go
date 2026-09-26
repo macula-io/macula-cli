@@ -27,8 +27,10 @@ type Envelope struct {
 // Error is a failure: its kind, the provider's, relay's or stream's code and
 // detail when the wire carried one, and the message for people.
 //
-// Kinds: provider_error, relay_error, stream_error, timeout, no_provider,
-// no_realm_key, not_found, invalid_argument, failed.
+// Kinds: provider_error, relay_error, stream_error, realm_refusal (code: the
+// realm's error, detail: the HTTP status), timeout, no_provider,
+// no_realm_key, not_found, not_shared, content_unavailable,
+// invalid_argument, failed.
 type Error struct {
 	Kind    string `json:"kind"`
 	Code    string `json:"code,omitempty"`
@@ -77,11 +79,18 @@ func Usage(jsonOut bool, err error) int {
 	return 2
 }
 
+// refusal is an error that carries a service's own refusal code and status,
+// such as a realm's HTTP answer.
+type refusal interface {
+	Refusal() (code string, status int)
+}
+
 func classify(err error) Error {
 	e := Error{Kind: "failed", Message: err.Error()}
 	var provider *stationlink.ProviderError
 	var relay *stationlink.RelayError
 	var stream *stationlink.StreamError
+	var refused refusal
 	switch {
 	case errors.As(err, &provider):
 		e.Kind, e.Code = "provider_error", provider.Code
@@ -92,6 +101,9 @@ func classify(err error) Error {
 		e.Kind, e.Code = "relay_error", relay.Code
 	case errors.As(err, &stream):
 		e.Kind, e.Code, e.Detail, e.Relay = "stream_error", stream.Code, stream.Message, stream.Relay
+	case errors.As(err, &refused):
+		code, status := refused.Refusal()
+		e.Kind, e.Code, e.Detail = "realm_refusal", code, fmt.Sprintf("HTTP %d", status)
 	case errors.Is(err, stationlink.ErrCallTimeout), errors.Is(err, context.DeadlineExceeded):
 		e.Kind = "timeout"
 	case errors.Is(err, pool.ErrNoProvider):
@@ -100,6 +112,10 @@ func classify(err error) Error {
 		e.Kind = "no_realm_key"
 	case errors.Is(err, stationlink.ErrRecordNotFound):
 		e.Kind = "not_found"
+	case errors.Is(err, pool.ErrNotShared):
+		e.Kind = "not_shared"
+	case errors.Is(err, pool.ErrContentUnavailable):
+		e.Kind = "content_unavailable"
 	}
 	return e
 }

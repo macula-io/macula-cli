@@ -60,8 +60,7 @@ func contentProbe(ctx context.Context, sharer, fetcher *pool.Pool, realm [32]byt
 
 func runContent(args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: macula-cli content share|get|probe ...")
-		return 2
+		return unknownSubcommand("content", args, "share, get, probe")
 	}
 	switch args[0] {
 	case "share":
@@ -71,8 +70,7 @@ func runContent(args []string) int {
 	case "probe":
 		return runContentProbe(args[1:])
 	}
-	fmt.Fprintf(os.Stderr, "macula-cli content: unknown subcommand %q (share, get, probe)\n", args[0])
-	return 2
+	return unknownSubcommand("content", args, "share, get, probe")
 }
 
 func contentFlags(name, usage string, extra func(*flag.FlagSet)) (*flag.FlagSet, *meshFlags) {
@@ -93,9 +91,8 @@ func runContentShare(args []string) int {
 	fs, m := contentFlags("share", "usage: macula-cli content share -seed host:port@<node_id> -realm <realm> [flags] <file>\n"+
 		"       the content is served from this node while it runs (node-served content): stop it and it is gone", nil)
 	duration := fs.Duration("for", 0, "share for this long (default: until interrupted)")
-	if err := fs.Parse(args); err != nil || fs.NArg() != 1 {
-		fs.Usage()
-		return 2
+	if code, ok := parse(fs, args, &m.jsonOut, exactly(1)); !ok {
+		return code
 	}
 	data, err := os.ReadFile(fs.Arg(0))
 	if err != nil {
@@ -136,9 +133,11 @@ func runContentGet(args []string) int {
 	fs, m := contentFlags("get", "usage: macula-cli content get -seed host:port@<node_id> -realm <realm> [flags] <mcid>", nil)
 	out := fs.String("out", "", "write the content to this file (default: stdout)")
 	maxBytes := fs.Uint64("max-bytes", 0, "refuse content larger than this (default: macula's 256 MiB)")
-	if err := fs.Parse(args); err != nil || fs.NArg() != 1 {
-		fs.Usage()
-		return 2
+	if code, ok := parse(fs, args, &m.jsonOut, exactly(1)); !ok {
+		return code
+	}
+	if m.jsonOut && *out == "" {
+		return report.Usage(true, errors.New("content get -json needs -out: the content is not JSON"))
 	}
 	mcid, err := parseMcid(fs.Arg(0))
 	if err != nil {
@@ -159,16 +158,13 @@ func runContentGet(args []string) int {
 		return report.Fail(m.jsonOut, err)
 	}
 	if *out != "" {
-		if err := os.WriteFile(*out, data, 0o644); err != nil {
+		if err := os.WriteFile(*out, data, 0o600); err != nil {
 			return report.Fail(m.jsonOut, err)
 		}
 		report.Ok(m.jsonOut, map[string]any{"mcid": fs.Arg(0), "bytes": len(data), "file": *out}, func(w io.Writer) {
 			fmt.Fprintf(w, "%d bytes to %s\n", len(data), *out)
 		})
 		return 0
-	}
-	if m.jsonOut {
-		return report.Usage(true, errors.New("content get -json needs -out: the content is not JSON"))
 	}
 	_, _ = report.Out.Write(data)
 	return 0
@@ -178,9 +174,8 @@ func runContentProbe(args []string) int {
 	fs, m := contentFlags("probe", "usage: macula-cli content probe -seed host:port@<node_id> [-seed ...] -realm <realm> [flags]\n"+
 		"       two keys made for the run: a sharer linked to the first seed, a fetcher to the last", nil)
 	size := fs.Int("size", 300_000, "bytes to share (over 256 KiB takes the chunked path)")
-	if err := fs.Parse(args); err != nil || fs.NArg() != 0 {
-		fs.Usage()
-		return 2
+	if code, ok := parse(fs, args, &m.jsonOut, exactly(0)); !ok {
+		return code
 	}
 	realm, err := realmID(m.realm)
 	if err != nil {

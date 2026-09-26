@@ -99,8 +99,8 @@ a few seconds). `-ephemeral` uses a key made for the run and never saved;
 | `realm status <session>` | A join session's state, and what the realm granted once confirmed |
 | `realm membership` | This node's membership UCAN, over the mesh; the node must be admitted |
 
-A procedure `~/<name>` is `<name>` in the node's own namespace, which needs no
-org and no realm key: `serve ~/echo` on one node and `call ~<its node_id>/echo`
+A procedure `'~/<name>'` is `<name>` in the node's own namespace, which needs no
+org and no realm key: `serve '~/echo'` on one node and `call '~<its node_id>/echo'`
 on another. An `<org>/<name>` procedure is served only by a node the org has
 delegated it to, and called only with the realm's key pinned.
 
@@ -127,10 +127,12 @@ With `-json` every command prints one envelope (`pubsub watch` one per event):
 {"ok": false, "error": {"kind": "provider_error", "code": "handler_error", "detail": "...", "message": "..."}}
 ```
 
-`kind` is one of `provider_error`, `relay_error`, `stream_error`, `timeout`,
-`no_provider`, `no_realm_key`, `not_found`, `invalid_argument` and `failed`,
-taken from macula-go's typed errors, never from their text. A malformed
-invocation exits 2, a failure 1.
+`kind` is one of `provider_error`, `relay_error`, `stream_error`,
+`realm_refusal`, `timeout`, `no_provider`, `no_realm_key`, `not_found`,
+`not_shared`, `content_unavailable`, `invalid_argument` and `failed`, taken
+from macula-go's typed errors and the realm's own error codes, never from a
+message. A malformed invocation (a `-json` one included) prints an
+`invalid_argument` envelope and exits 2, a failure exits 1, `-h` exits 0.
 
 ## Build and test
 

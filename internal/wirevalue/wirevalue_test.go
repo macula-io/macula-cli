@@ -63,7 +63,9 @@ func TestAnObjectWithMoreThanBytesStaysAMap(t *testing.T) {
 	}
 }
 
-func TestWireCBORBecomesJSONThatReadsBack(t *testing.T) {
+// A uint64 beyond int64 (a record's own field may be one) is written as its
+// digits; a payload never holds one, so reading it back is not asked of it.
+func TestWireCBORBecomesJSONAndAPayloadReadsBackTheSame(t *testing.T) {
 	v := cbor.Map([]cbor.MapEntry{
 		{Key: cbor.Text("b"), Val: cbor.Bytes([]byte{1, 2, 3})},
 		{Key: cbor.Text("f"), Val: cbor.Float(2)},
@@ -72,15 +74,39 @@ func TestWireCBORBecomesJSONThatReadsBack(t *testing.T) {
 		{Key: cbor.Text("l"), Val: cbor.List([]cbor.Value{cbor.Int(-1), cbor.Text("é")})},
 	})
 	text := ToJSON(v)
-	want := `{"b":{"$bytes":"AQID"},"f":2.0,"u":18446744073709551615,"n":null,"l":[-1,"é"]}`
+	want := `{"b":{"$bytes":"AQID"},"f":2.0,"l":[-1,"é"],"n":null,"u":18446744073709551615}`
 	if string(text) != want {
 		t.Fatalf("got %s\nwant %s", text, want)
 	}
-	back, err := FromJSON([]byte(`{"b":{"$bytes":"AQID"},"f":2.0,"n":null,"l":[-1,"é"]}`))
+	payload := cbor.Map([]cbor.MapEntry{
+		{Key: cbor.Text("b"), Val: cbor.Bytes([]byte{1, 2, 3})},
+		{Key: cbor.Text("f"), Val: cbor.Float(2)},
+		{Key: cbor.Text("i"), Val: cbor.Int(-9223372036854775808)},
+		{Key: cbor.Text("n"), Val: cbor.Null()},
+		{Key: cbor.Text("l"), Val: cbor.List([]cbor.Value{cbor.Int(-1), cbor.Text("é")})},
+	})
+	back, err := FromJSON(ToJSON(payload))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if f, _ := back.Get("f"); f.Kind() != cbor.KindFloat {
-		t.Fatalf("2.0 read back as %v, want a float", f)
+	if !bytes.Equal(cbor.Encode(back), cbor.Encode(payload)) {
+		t.Fatalf("read back %v, want %v", back, payload)
+	}
+}
+
+func TestOneValueIsAlwaysTheSameText(t *testing.T) {
+	v, err := FromJSON([]byte(`{"z": 1, "a": 2, "m": {"y": 3, "b": 4}, "bb": 5}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := string(ToJSON(v))
+	for i := 0; i < 20; i++ {
+		again, _ := FromJSON([]byte(`{"z": 1, "a": 2, "m": {"y": 3, "b": 4}, "bb": 5}`))
+		if got := string(ToJSON(again)); got != first {
+			t.Fatalf("%s then %s", first, got)
+		}
+	}
+	if first != `{"a":2,"m":{"b":4,"y":3},"z":1,"bb":5}` {
+		t.Fatalf("keys not in the wire's order: %s", first)
 	}
 }

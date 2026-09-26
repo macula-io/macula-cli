@@ -27,6 +27,9 @@ func TestFailuresAreClassifiedByTheirTypeNotTheirText(t *testing.T) {
 		{fmt.Errorf("x: %w", pool.ErrNoProvider), Error{Kind: "no_provider"}},
 		{pool.ErrNoRealmKey, Error{Kind: "no_realm_key"}},
 		{stationlink.ErrRecordNotFound, Error{Kind: "not_found"}},
+		{fmt.Errorf("get: %w", pool.ErrNotShared), Error{Kind: "not_shared"}},
+		{pool.ErrContentUnavailable, Error{Kind: "content_unavailable"}},
+		{testRefusal{}, Error{Kind: "realm_refusal", Code: "bad_proof", Detail: "HTTP 401"}},
 		{errors.New("anything else"), Error{Kind: "failed"}},
 	}
 	for _, c := range cases {
@@ -37,3 +40,8 @@ func TestFailuresAreClassifiedByTheirTypeNotTheirText(t *testing.T) {
 		}
 	}
 }
+
+type testRefusal struct{}
+
+func (testRefusal) Error() string          { return "refused" }
+func (testRefusal) Refusal() (string, int) { return "bad_proof", 401 }

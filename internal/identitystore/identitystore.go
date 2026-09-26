@@ -37,8 +37,7 @@ func LoadOrCreate(path string, p profile.Profile) (key *identity.NodeKey, create
 		return key, false, nil
 	}
 	if !errors.Is(err, fs.ErrNotExist) {
-		return nil, false, fmt.Errorf("identitystore: %s is not a macula 12 key of profile %s (a 10.x identity.seed is not one; "+
-			"move it aside and a new key is created): %w", path, p, err)
+		return nil, false, refused(path, p, err)
 	}
 	key, err = identity.GenerateIdentityKey(p, identity.PuzzleDifficulty)
 	if err != nil {
@@ -51,4 +50,22 @@ func LoadOrCreate(path string, p profile.Profile) (key *identity.NodeKey, create
 		return nil, false, fmt.Errorf("identitystore: save %s: %w", path, err)
 	}
 	return key, true, nil
+}
+
+// refused says why the key file at path was not loaded, and what to do: the
+// file is the node's identity unless it is no macula 12 key at all, so only
+// then is moving it aside the advice.
+func refused(path string, p profile.Profile, err error) error {
+	switch {
+	case errors.Is(err, identity.ErrWrongProfile):
+		return fmt.Errorf("identitystore: %s holds a key of another profile than %s; pass the other -profile: %w", path, p, err)
+	case errors.Is(err, identity.ErrKeyFilePermissions):
+		return fmt.Errorf("identitystore: %s can be read by others; chmod 600 it: %w", path, err)
+	case errors.Is(err, identity.ErrKeyFileOwner):
+		return fmt.Errorf("identitystore: %s belongs to another user; use your own key file: %w", path, err)
+	case errors.Is(err, identity.ErrBadKeyFile), errors.Is(err, identity.ErrWrongPurpose):
+		return fmt.Errorf("identitystore: %s is not a macula 12 key (a 10.x identity.seed is not one; "+
+			"move it aside and a new key is created): %w", path, err)
+	}
+	return fmt.Errorf("identitystore: %s: %w", path, err)
 }

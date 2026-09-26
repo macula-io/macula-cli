@@ -25,7 +25,7 @@ func serving(t *testing.T, tm *testMesh, i int, procedure string, o serveOptions
 		if seen == nil {
 			seen = func(servedCall) {}
 		}
-		if _, err := serve(ctx, p, tm.realm.ID, procedure, o, seen); err != nil && ctx.Err() == nil {
+		if _, _, err := serve(ctx, p, tm.realm.ID, procedure, o, seen); err != nil && ctx.Err() == nil {
 			t.Errorf("serve: %v", err)
 		}
 	}()
@@ -77,8 +77,8 @@ func TestServeOnceStopsAfterOneCall(t *testing.T) {
 	p, _ := tm.node(t, 0, false, false)
 	done := make(chan error, 1)
 	go func() {
-		_, err := serve(context.Background(), p, tm.realm.ID, "~/one", serveOptions{once: true}, func(servedCall) {})
-		done <- err
+		_, withdrawErr, err := serve(context.Background(), p, tm.realm.ID, "~/one", serveOptions{once: true}, func(servedCall) {})
+		done <- errors.Join(err, withdrawErr)
 	}()
 	full := ownProcedure("~/one", p.NodeID())
 	for !tm.stations[0].Advertised(tm.realm.ID, full) {

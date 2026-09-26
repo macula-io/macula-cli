@@ -23,7 +23,7 @@ import (
 	"github.com/macula-io/macula-go/record"
 )
 
-func TestAWatchHearsAPublicationOnce(t *testing.T) {
+func TestAWatchHearsAPublicationAndStopsAtItsCount(t *testing.T) {
 	tm := newTestMesh(t)
 	listener, _ := tm.node(t, 0, false, false)
 	publisher, _ := tm.node(t, 0, false, false)
@@ -366,5 +366,60 @@ func TestProveOwnershipRefusesACallerField(t *testing.T) {
 	payload := cbor.Map([]cbor.MapEntry{{Key: cbor.Text("caller"), Val: cbor.Text("me")}})
 	if _, err := proveOwnership(freshKey(t), [32]byte{}, "p", payload); !errors.Is(err, ownershipproof.ErrCallerField) {
 		t.Fatalf("%v, want ErrCallerField", err)
+	}
+}
+
+// bothStations is a node linked to both test stations.
+func (tm *testMesh) bothStations(t *testing.T) *pool.Pool {
+	t.Helper()
+	m := tm.flags(0, false)
+	b := tm.stations[1]
+	m.seeds = append(m.seeds, pool.Seed{Host: b.Host, Port: b.Port, NodeID: b.NodeID})
+	p, err := m.connect(context.Background(), freshKey(t), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = p.Close() })
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		up := 0
+		for _, s := range p.Status() {
+			if s.Up {
+				up++
+			}
+		}
+		if up == 2 {
+			return p
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%d of 2 links up", up)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// A listener subscribed on two links hears one event per publication in the
+// window, not one per subscription. The teststation delivers a publication
+// only to its own subscribers, so the event arrives on one link: dedup of one
+// publication arriving on several links is macula-go's pool's, tested there.
+func TestAListenerSubscribedOnTwoLinksHearsOneEventPerPublication(t *testing.T) {
+	tm := newTestMesh(t)
+	listener := tm.bothStations(t)
+	publisher := tm.bothStations(t)
+	ready := make(chan struct{})
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	done := make(chan int, 1)
+	go func() {
+		n, _ := watch(ctx, listener, tm.realm.ID, "mcl-cli/tests/twice_sent_v1", 0, func() { close(ready) }, func(heardEvent) {})
+		done <- n
+	}()
+	<-ready
+	time.Sleep(300 * time.Millisecond)
+	if err := publish(publisher, tm.realm.ID, "mcl-cli/tests/twice_sent_v1", cbor.Int(1), 0); err != nil {
+		t.Fatal(err)
+	}
+	if n := <-done; n != 1 {
+		t.Fatalf("heard %d events in the window, want exactly 1", n)
 	}
 }

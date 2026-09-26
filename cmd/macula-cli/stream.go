@@ -7,7 +7,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"os"
 	"time"
 
 	"github.com/macula-io/macula-go/frame"
@@ -84,8 +83,7 @@ func streamProbe(ctx context.Context, provider, caller *pool.Pool, realm [32]byt
 
 func runStream(args []string) int {
 	if len(args) == 0 || args[0] != "probe" {
-		fmt.Fprintln(os.Stderr, "usage: macula-cli stream probe -seed host:port@<node_id> [-seed ...] -realm <realm> [flags]")
-		return 2
+		return unknownSubcommand("stream", args, "probe")
 	}
 	fs := flag.NewFlagSet("stream probe", flag.ContinueOnError)
 	var m meshFlags
@@ -97,9 +95,8 @@ func runStream(args []string) int {
 		fmt.Fprintln(fs.Output(), "       two keys made for the run: a provider linked to the first seed, a caller to the last")
 		fs.PrintDefaults()
 	}
-	if err := fs.Parse(args[1:]); err != nil || fs.NArg() != 0 {
-		fs.Usage()
-		return 2
+	if code, ok := parse(fs, args[1:], &m.jsonOut, exactly(0)); !ok {
+		return code
 	}
 	if *chunks < 1 || *size < 1 {
 		return report.Usage(m.jsonOut, errors.New("-chunks and -size are at least 1"))

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"strconv"
@@ -18,6 +19,7 @@ import (
 	"github.com/macula-io/macula-go/profile"
 
 	"github.com/macula-io/macula-cli/internal/identitystore"
+	"github.com/macula-io/macula-cli/internal/report"
 )
 
 // defaultPort is a macula station's QUIC port across the fleet.
@@ -200,4 +202,67 @@ func ownProcedure(procedure string, node [32]byte) string {
 		return fmt.Sprintf("~%x/%s", node, rest)
 	}
 	return procedure
+}
+
+// parse parses args into fs and checks the number of positional arguments.
+// It returns false with the exit code when the command must stop: 0 after
+// -h, and 2 for a malformed invocation, reported as an invalid_argument
+// envelope under -json (asked for on the command line or already parsed) and
+// as the error and the usage otherwise.
+func parse(fs *flag.FlagSet, args []string, jsonOut *bool, arity func(n int) error) (int, bool) {
+	fs.SetOutput(io.Discard)
+	err := fs.Parse(args)
+	fs.SetOutput(os.Stderr)
+	if errors.Is(err, flag.ErrHelp) {
+		fs.Usage()
+		return 0, false
+	}
+	if err == nil && arity != nil {
+		err = arity(fs.NArg())
+	}
+	if err != nil {
+		return usageFailure(fs, args, jsonOut, err), false
+	}
+	return 0, true
+}
+
+// usageFailure reports a malformed invocation found after parsing: exit 2.
+func usageFailure(fs *flag.FlagSet, args []string, jsonOut *bool, err error) int {
+	asJSON := (jsonOut != nil && *jsonOut) || jsonRequested(args)
+	code := report.Usage(asJSON, err)
+	if !asJSON && fs != nil {
+		fs.Usage()
+	}
+	return code
+}
+
+// jsonRequested is whether args ask for -json, read before or without a
+// successful parse.
+func jsonRequested(args []string) bool {
+	for _, a := range args {
+		switch a {
+		case "-json", "--json", "-json=true", "--json=true":
+			return true
+		}
+	}
+	return false
+}
+
+// exactly is an arity check for n positional arguments.
+func exactly(n int) func(int) error {
+	return func(got int) error {
+		if got != n {
+			return fmt.Errorf("want %d positional arguments, got %d", n, got)
+		}
+		return nil
+	}
+}
+
+// unknownSubcommand reports a subcommand that does not exist: exit 2.
+func unknownSubcommand(command string, args []string, known string) int {
+	sub := ""
+	if len(args) > 0 {
+		sub = args[0]
+	}
+	return usageFailure(nil, args, nil, fmt.Errorf("macula-cli %s: unknown subcommand %q (%s)", command, sub, known))
 }

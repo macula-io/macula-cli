@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -64,9 +65,11 @@ func runConnect(args []string) int {
 		fmt.Fprintln(fs.Output(), "       refusing a station that does not prove the node_id")
 		fs.PrintDefaults()
 	}
-	if err := fs.Parse(args); err != nil || fs.NArg() != 0 || len(m.seeds) == 0 {
-		fs.Usage()
-		return 2
+	if code, ok := parse(fs, args, &m.jsonOut, exactly(0)); !ok {
+		return code
+	}
+	if len(m.seeds) == 0 {
+		return usageFailure(fs, args, &m.jsonOut, errors.New("-seed is required: host[:port]@<station node_id hex>"))
 	}
 	key, err := m.key()
 	if err != nil {

@@ -32,8 +32,10 @@ type serveOptions struct {
 
 // serve serves procedure in realm until ctx ends, or after one call with
 // once, reporting each call to seen. It answers reply, or echoes the payload.
+// err is a failure to serve at all; withdrawErr a failure to withdraw the
+// procedure at the end, which leaves the advertisement to lapse on its own.
 func serve(ctx context.Context, p *pool.Pool, realm [32]byte, procedure string, o serveOptions,
-	seen func(servedCall)) (string, error) {
+	seen func(servedCall)) (full string, withdrawErr error, err error) {
 	procedure = ownProcedure(procedure, p.NodeID())
 	ctx, stop := context.WithCancel(ctx)
 	defer stop()
@@ -50,10 +52,10 @@ func serve(ctx context.Context, p *pool.Pool, realm [32]byte, procedure string, 
 	}
 	served, err := p.Serve(ctx, pool.Offer{Realm: realm, Procedure: procedure, Handler: handler})
 	if err != nil {
-		return procedure, err
+		return procedure, nil, err
 	}
 	<-ctx.Done()
-	return procedure, served.Stop()
+	return procedure, served.Stop(), nil
 }
 
 func runServe(args []string) int {
@@ -69,9 +71,8 @@ func runServe(args []string) int {
 		fmt.Fprintln(fs.Output(), "       <org>/<name> needs the org's delegation to this node in the DHT")
 		fs.PrintDefaults()
 	}
-	if err := fs.Parse(args); err != nil || fs.NArg() != 1 {
-		fs.Usage()
-		return 2
+	if code, ok := parse(fs, args, &m.jsonOut, exactly(1)); !ok {
+		return code
 	}
 	var o serveOptions
 	o.once = *once
@@ -105,7 +106,7 @@ func runServe(args []string) int {
 	if !m.jsonOut {
 		fmt.Fprintf(os.Stderr, "serving as node %x; interrupt to stop\n", p.NodeID())
 	}
-	procedure, err := serve(ctx, p, realm, fs.Arg(0), o, func(c servedCall) {
+	procedure, withdrawErr, err := serve(ctx, p, realm, fs.Arg(0), o, func(c servedCall) {
 		mu.Lock()
 		defer mu.Unlock()
 		calls = append(calls, c)
@@ -116,8 +117,17 @@ func runServe(args []string) int {
 	if err != nil {
 		return report.Fail(m.jsonOut, err)
 	}
-	report.Ok(m.jsonOut, map[string]any{"procedure": procedure, "calls": calls}, func(w io.Writer) {
+	// The calls answered are reported whether or not the withdrawal went
+	// through; a procedure not withdrawn lapses when its advertisement does.
+	result := map[string]any{"procedure": procedure, "calls": calls, "withdrawn": 1}
+	if withdrawErr != nil {
+		result["withdrawn"], result["withdraw_error"] = 0, withdrawErr.Error()
+	}
+	report.Ok(m.jsonOut, result, func(w io.Writer) {
 		fmt.Fprintf(w, "stopped serving %s after %d calls\n", procedure, len(calls))
+		if withdrawErr != nil {
+			fmt.Fprintf(w, "not withdrawn (it lapses on its own): %v\n", withdrawErr)
+		}
 	})
 	return 0
 }

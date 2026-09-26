@@ -50,7 +50,8 @@ type sessionStatus struct {
 	UCAN        *string `json:"ucan,omitempty"`
 }
 
-// realmRefusal is the realm's error body.
+// realmRefusal is the realm's error body: report classifies it as kind
+// realm_refusal, with the realm's error as its code.
 type realmRefusal struct {
 	Status int
 	Reason string
@@ -58,6 +59,21 @@ type realmRefusal struct {
 
 func (r *realmRefusal) Error() string {
 	return fmt.Sprintf("the realm refused it: HTTP %d %s", r.Status, r.Reason)
+}
+
+// Refusal is the realm's error code and the HTTP status it came with.
+func (r *realmRefusal) Refusal() (string, int) { return r.Reason, r.Status }
+
+// realmName is -realm as the realm's name, which realm requests need: the
+// proof signs its sha256, and the membership procedure is named under it.
+func realmName(text string) (string, error) {
+	if text == "" {
+		return "", errors.New("-realm is required: the realm's name (io.macula)")
+	}
+	if _, err := hex32(text); err == nil {
+		return "", errors.New("-realm is the realm's name here (io.macula), not its id: the proof signs the name's sha256")
+	}
+	return text, nil
 }
 
 // requestJoin asks the realm at baseURL for a join session for key's device,
@@ -177,8 +193,7 @@ func requestMembership(ctx context.Context, call caller, key *identity.NodeKey, 
 
 func runRealm(args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: macula-cli realm join|status|membership ...")
-		return 2
+		return unknownSubcommand("realm", args, "join, status, membership")
 	}
 	switch args[0] {
 	case "join":
@@ -188,8 +203,7 @@ func runRealm(args []string) int {
 	case "membership":
 		return runRealmMembership(args[1:])
 	}
-	fmt.Fprintf(os.Stderr, "macula-cli realm: unknown subcommand %q (join, status, membership)\n", args[0])
-	return 2
+	return unknownSubcommand("realm", args, "join, status, membership")
 }
 
 func runRealmJoin(args []string) int {
@@ -204,12 +218,12 @@ func runRealmJoin(args []string) int {
 		fmt.Fprintln(fs.Output(), "       asks the realm for a join session; a human admits the device at the join URL")
 		fs.PrintDefaults()
 	}
-	if err := fs.Parse(args); err != nil || fs.NArg() != 0 {
-		fs.Usage()
-		return 2
+	if code, ok := parse(fs, args, &m.jsonOut, exactly(0)); !ok {
+		return code
 	}
-	if m.realm == "" {
-		return report.Usage(m.jsonOut, errors.New("-realm is the realm's name (io.macula): the proof signs sha256 of it"))
+	name, err := realmName(m.realm)
+	if err != nil {
+		return report.Usage(m.jsonOut, err)
 	}
 	key, err := m.key()
 	if err != nil {
@@ -222,7 +236,7 @@ func runRealmJoin(args []string) int {
 	info := map[string]any{"hostname": host, "os": runtime.GOOS + "/" + runtime.GOARCH, "version": "macula-cli " + version}
 	ctx := context.Background()
 	client := &http.Client{Timeout: m.timeout}
-	session, err := requestJoin(ctx, client, *realmURL, m.realm, key, info)
+	session, err := requestJoin(ctx, client, *realmURL, name, key, info)
 	if err != nil {
 		return report.Fail(m.jsonOut, err)
 	}
@@ -277,9 +291,8 @@ func runRealmStatus(args []string) int {
 		fmt.Fprintln(fs.Output(), "usage: macula-cli realm status [flags] <session id>")
 		fs.PrintDefaults()
 	}
-	if err := fs.Parse(args); err != nil || fs.NArg() != 1 {
-		fs.Usage()
-		return 2
+	if code, ok := parse(fs, args, jsonOut, exactly(1)); !ok {
+		return code
 	}
 	status, err := joinStatus(context.Background(), &http.Client{Timeout: *timeout}, *realmURL, fs.Arg(0))
 	if err != nil {
@@ -298,12 +311,12 @@ func runRealmMembership(args []string) int {
 		fmt.Fprintln(fs.Output(), "       asks the realm, over the mesh, for this node's membership UCAN; the node must be admitted")
 		fs.PrintDefaults()
 	}
-	if err := fs.Parse(args); err != nil || fs.NArg() != 0 {
-		fs.Usage()
-		return 2
+	if code, ok := parse(fs, args, &m.jsonOut, exactly(0)); !ok {
+		return code
 	}
-	if _, err := hex32(m.realm); err == nil || m.realm == "" {
-		return report.Usage(m.jsonOut, errors.New("-realm is the realm's name (io.macula): the procedure is named under it"))
+	name, err := realmName(m.realm)
+	if err != nil {
+		return report.Usage(m.jsonOut, err)
 	}
 	key, err := m.key()
 	if err != nil {
@@ -315,7 +328,7 @@ func runRealmMembership(args []string) int {
 		return report.Fail(m.jsonOut, err)
 	}
 	defer p.Close()
-	r, err := requestMembership(ctx, p.Call, key, m.realm, m.timeout)
+	r, err := requestMembership(ctx, p.Call, key, name, m.timeout)
 	if err != nil {
 		return report.Fail(m.jsonOut, err)
 	}

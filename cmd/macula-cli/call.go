@@ -46,9 +46,8 @@ func runCall(args []string) int {
 		fmt.Fprintln(fs.Output(), "       a procedure ~/<name> is <name> in this node's own namespace")
 		fs.PrintDefaults()
 	}
-	if err := fs.Parse(args); err != nil || fs.NArg() != 1 {
-		fs.Usage()
-		return 2
+	if code, ok := parse(fs, args, &m.jsonOut, exactly(1)); !ok {
+		return code
 	}
 	payload, err := payloadFlag(*payloadText, *payloadFile)
 	if err != nil {

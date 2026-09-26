@@ -63,7 +63,7 @@ func usage() {
 
 Every station is pinned: -seed host[:port]@<station node_id hex>.
 A realm is -realm <name or 64-hex id>, trusted with -realm-key <hex|@file>.
-A procedure ~/<name> is <name> in this node's own namespace.
+A procedure '~/<name>' (quoted, or the shell expands ~) is <name> in this node's own namespace.
 
   macula-cli connect -seed ...                         resolve the seed and link to its station
   macula-cli call -seed ... -realm ... <procedure>      call a procedure by direct dial

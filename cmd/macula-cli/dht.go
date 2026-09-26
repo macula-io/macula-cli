@@ -5,7 +5,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"os"
 	"strconv"
 	"strings"
 
@@ -83,8 +82,7 @@ func findByType(ctx context.Context, p *pool.Pool, t record.Type) (foundRecords,
 
 func runDht(args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: macula-cli dht find-record|find-records|find-records-by-type ...")
-		return 2
+		return unknownSubcommand("dht", args, "find-record, find-records, find-records-by-type")
 	}
 	sub := args[0]
 	fs := flag.NewFlagSet("dht "+sub, flag.ContinueOnError)
@@ -96,12 +94,10 @@ func runDht(args []string) int {
 		fs.PrintDefaults()
 	}
 	if sub != "find-record" && sub != "find-records" && sub != "find-records-by-type" {
-		fmt.Fprintf(os.Stderr, "macula-cli dht: unknown subcommand %q\n", sub)
-		return 2
+		return unknownSubcommand("dht", args, "find-record, find-records, find-records-by-type")
 	}
-	if err := fs.Parse(args[1:]); err != nil || fs.NArg() != 1 {
-		fs.Usage()
-		return 2
+	if code, ok := parse(fs, args[1:], &m.jsonOut, exactly(1)); !ok {
+		return code
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), m.timeout)
 	defer cancel()

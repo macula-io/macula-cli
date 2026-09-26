@@ -6,9 +6,14 @@
 // whose only key is "$bytes", holding standard padded base64, is a byte
 // string. A boolean is refused: macula's CBOR has none, so send 0 or 1.
 //
-// JSON out: bytes as the same {"$bytes": ...} object, so a value received can
-// be sent back unchanged; floats always with a fraction or exponent, so they
-// read back as floats; map keys in the wire's order.
+// JSON out: bytes as the same {"$bytes": ...} object and floats always with a
+// fraction or exponent, so a payload received reads back as the same value
+// and can be sent back unchanged (a payload's integers are within int64: the
+// wire refuses any other). Map keys come out sorted by their encoded bytes,
+// the wire's own order, so the output of one value is always the same text.
+// Two cases do not round-trip, and macula's payloads have neither: a map whose
+// only key is a text "$bytes" reads back as bytes, and a key that is not text
+// is written as its diagnostic string, which can repeat a text key.
 package wirevalue
 
 import (
@@ -19,6 +24,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -153,6 +159,10 @@ func write(buf *bytes.Buffer, v cbor.Value) {
 		buf.WriteByte(']')
 	case cbor.KindMap:
 		entries, _ := v.AsMap()
+		entries = append([]cbor.MapEntry(nil), entries...)
+		sort.Slice(entries, func(i, j int) bool {
+			return bytes.Compare(cbor.Encode(entries[i].Key), cbor.Encode(entries[j].Key)) < 0
+		})
 		buf.WriteByte('{')
 		for i, e := range entries {
 			if i > 0 {

@@ -18,16 +18,34 @@ import (
 	"github.com/macula-io/macula-cli/internal/wirevalue"
 )
 
-// servedCall is one call a served procedure answered.
+// servedCall is one call a served procedure answered; Sealed is 1 when the
+// request came sealed end to end.
 type servedCall struct {
 	Caller  string  `json:"caller"`
 	Payload rawJSON `json:"payload"`
+	Sealed  int     `json:"sealed"`
 }
 
-// serveOptions say what serve answers and when it stops.
+// serveOptions say what serve answers, how it takes requests and when it
+// stops.
 type serveOptions struct {
-	reply *cbor.Value // nil: echo the caller's payload
-	once  bool        // stop after answering one call
+	reply        *cbor.Value // nil: echo the caller's payload
+	once         bool        // stop after answering one call
+	confidential stationlink.Confidentiality
+}
+
+// confidentialFlag reads -confidential: preferred (seal when the caller can),
+// required (refuse clear requests) or off (serve in the clear, name no key).
+func confidentialFlag(text string) (stationlink.Confidentiality, error) {
+	switch text {
+	case "preferred":
+		return stationlink.ConfidentialPreferred, nil
+	case "required":
+		return stationlink.ConfidentialRequired, nil
+	case "off":
+		return stationlink.ConfidentialOff, nil
+	}
+	return 0, fmt.Errorf("-confidential: %q is not preferred, required or off", text)
 }
 
 // serve serves procedure in realm until ctx ends, or after one call with
@@ -40,7 +58,12 @@ func serve(ctx context.Context, p *pool.Pool, realm [32]byte, procedure string, 
 	ctx, stop := context.WithCancel(ctx)
 	defer stop()
 	handler := func(_ context.Context, r stationlink.Request) (cbor.Value, error) {
-		seen(servedCall{Caller: fmt.Sprintf("%x", r.Caller), Payload: rawJSON(wirevalue.ToJSON(r.Payload))})
+		sealed := 0
+		if r.Sealed {
+			sealed = 1
+		}
+		seen(servedCall{Caller: fmt.Sprintf("%x", r.Caller), Payload: rawJSON(wirevalue.ToJSON(r.Payload)),
+			Sealed: sealed})
 		if o.once {
 			// Let the answer go out before the procedure is withdrawn.
 			time.AfterFunc(500*time.Millisecond, stop)
@@ -50,7 +73,8 @@ func serve(ctx context.Context, p *pool.Pool, realm [32]byte, procedure string, 
 		}
 		return r.Payload, nil
 	}
-	served, err := p.Serve(ctx, pool.Offer{Realm: realm, Procedure: procedure, Handler: handler})
+	served, err := p.Serve(ctx, pool.Offer{Realm: realm, Procedure: procedure, Handler: handler,
+		Confidential: o.confidential})
 	if err != nil {
 		return procedure, nil, err
 	}
@@ -65,6 +89,8 @@ func runServe(args []string) int {
 	replyText := fs.String("reply", "", "answer every call with this JSON; echo the caller's payload when absent")
 	once := fs.Bool("once", false, "exit after answering one call")
 	forTime := fs.Duration("for", 0, "stop serving after this long (default: until interrupted)")
+	confidentialText := fs.String("confidential", "preferred",
+		"preferred: advertise a KEM key and answer sealed calls sealed; required: also refuse clear calls; off: clear only")
 	fs.Usage = func() {
 		fmt.Fprintln(fs.Output(), "usage: macula-cli serve -seed host:port@<node_id> -realm <realm> [-realm-key <hex|@file>] [flags] <procedure>")
 		fmt.Fprintln(fs.Output(), "       '~/<name>' (quoted) serves <name> in this node's own namespace, which needs no org and no realm key;")
@@ -76,6 +102,12 @@ func runServe(args []string) int {
 	}
 	var o serveOptions
 	o.once = *once
+	confidential, err := confidentialFlag(*confidentialText)
+	if err != nil {
+		return report.Usage(m.jsonOut, err)
+	}
+	o.confidential = confidential
+	m.kemAdvertise = confidential != stationlink.ConfidentialOff
 	if *replyText != "" {
 		v, err := wirevalue.FromJSON([]byte(*replyText))
 		if err != nil {

@@ -62,12 +62,19 @@ func (tm *testMesh) flags(i int, trusted bool) *meshFlags {
 // when admitted.
 func (tm *testMesh) node(t *testing.T, i int, trusted, admitted bool) (*pool.Pool, *meshFlags) {
 	t.Helper()
+	return tm.nodeWith(t, i, trusted, admitted, false)
+}
+
+// nodeWith is node, advertising the node's KEM key when kem, as serve does.
+func (tm *testMesh) nodeWith(t *testing.T, i int, trusted, admitted, kem bool) (*pool.Pool, *meshFlags) {
+	t.Helper()
 	key := freshKey(t)
 	if admitted {
 		id, _ := key.NodeID()
 		tm.realm.Admit(t, tm.stations[i], id)
 	}
 	m := tm.flags(i, trusted)
+	m.kemAdvertise = kem
 	p, err := m.connect(context.Background(), key, nil)
 	if err != nil {
 		t.Fatal(err)

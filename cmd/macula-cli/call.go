@@ -14,24 +14,42 @@ import (
 	"github.com/macula-io/macula-cli/internal/wirevalue"
 )
 
-// callResult is what a call reports.
+// callResult is what a call reports, with its seal report: Sealed 1 when the
+// exchange was sealed end to end, to the key SealKeyID names (empty when
+// clear), by Provider.
 type callResult struct {
 	Procedure string  `json:"procedure"`
 	Result    rawJSON `json:"result"`
+	Sealed    int     `json:"sealed"`
+	Provider  string  `json:"provider"`
+	SealKeyID string  `json:"seal_key_id"`
 	value     cbor.Value
 }
 
 // call calls procedure in realm, at provider when it is not zero, by direct
-// dial.
+// dial. It seals to the key the provider's advertisement names, if any.
 func call(ctx context.Context, p *pool.Pool, realm [32]byte, procedure string, payload cbor.Value, provider [32]byte,
 	m *meshFlags) (callResult, error) {
 	procedure = ownProcedure(procedure, p.NodeID())
-	result, err := p.Call(ctx, pool.Call{Realm: realm, Procedure: procedure, Provider: provider, Payload: payload,
-		Timeout: m.timeout})
+	result, rep, err := p.CallReport(ctx, pool.Call{Realm: realm, Procedure: procedure, Provider: provider,
+		Payload: payload, Timeout: m.timeout})
 	if err != nil {
 		return callResult{}, err
 	}
-	return callResult{Procedure: procedure, Result: rawJSON(wirevalue.ToJSON(result)), value: result}, nil
+	r := callResult{Procedure: procedure, Result: rawJSON(wirevalue.ToJSON(result)), value: result,
+		Sealed: rep.Sealed, Provider: fmt.Sprintf("%x", rep.Provider)}
+	if rep.Sealed == 1 {
+		r.SealKeyID = fmt.Sprintf("%x", rep.SealKeyID)
+	}
+	return r, nil
+}
+
+// sealLine is the seal report in text mode, on stderr.
+func sealLine(r callResult) string {
+	if r.Sealed == 1 {
+		return fmt.Sprintf("sealed to key %s of provider %s", r.SealKeyID, r.Provider)
+	}
+	return fmt.Sprintf("not sealed (provider %s names no key)", r.Provider)
 }
 
 func runCall(args []string) int {
@@ -73,7 +91,10 @@ func runCall(args []string) int {
 	if err != nil {
 		return report.Fail(m.jsonOut, err)
 	}
-	report.Ok(m.jsonOut, result, func(w io.Writer) { fmt.Fprintln(w, string(result.Result)) })
+	report.Ok(m.jsonOut, result, func(w io.Writer) {
+		fmt.Fprintln(w, string(result.Result))
+		fmt.Fprintln(os.Stderr, sealLine(result))
+	})
 	return 0
 }
 

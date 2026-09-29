@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- macula-cli runs on macula-go v0.20.0, the macula 13 wire: every link dials
+  handshake v5 and falls back to v4 only for a station never seen on v5 (a
+  station seen on v5 is never accepted on v4, macula#53).
+- `call` seals end to end when the provider's advertisement names a KEM key,
+  and reports it: `sealed` (1 or 0), `provider` and `seal_key_id` in the
+  `-json` result, and a line on stderr in text mode.
+- `serve -confidential preferred|required|off` (default `preferred`): the node
+  advertises a KEM key and answers sealed calls sealed; `required` also refuses
+  clear calls; `off` names no key and serves in the clear. Each call it answers
+  reports `sealed`.
+
 ## [0.9.0] - 2026-09-26
 
 ### Breaking

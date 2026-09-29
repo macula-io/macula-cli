@@ -61,7 +61,7 @@ func runConnect(args []string) int {
 	m.register(fs, false)
 	fs.Usage = func() {
 		fmt.Fprintln(fs.Output(), "usage: macula-cli connect -seed host:port@<node_id> [flags]")
-		fmt.Fprintln(fs.Output(), "       resolves the seed, then links to its station over the macula 12 handshake,")
+		fmt.Fprintln(fs.Output(), "       resolves the seed, then links to its station over the post-quantum handshake (v5; v4 to a station not yet on v5),")
 		fmt.Fprintln(fs.Output(), "       refusing a station that does not prove the node_id")
 		fs.PrintDefaults()
 	}

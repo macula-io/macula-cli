@@ -15,7 +15,8 @@ import (
 // its advertisement to be findable.
 func serving(t *testing.T, tm *testMesh, i int, procedure string, o serveOptions, seen func(servedCall)) string {
 	t.Helper()
-	p, _ := tm.node(t, i, true, strings.Contains(procedure, "/") && !strings.HasPrefix(procedure, "~"))
+	p, _ := tm.nodeWith(t, i, true, strings.Contains(procedure, "/") && !strings.HasPrefix(procedure, "~"),
+		o.confidential != stationlink.ConfidentialOff)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	t.Cleanup(func() { cancel(); <-done })
@@ -69,6 +70,65 @@ func TestServeAnswersAFixedReplyAndReportsTheCaller(t *testing.T) {
 	c := <-calls
 	if want := caller.NodeID(); c.Caller != hexOf(want[:]) || string(c.Payload) != `"ping"` {
 		t.Fatalf("seen %+v", c)
+	}
+}
+
+// A provider serving with its KEM key advertised gets a sealed call, and the
+// caller's report names the provider and the key the request was sealed to.
+func TestACallToAKeyedProviderIsSealedAndReportsTheKey(t *testing.T) {
+	tm := newTestMesh(t)
+	calls := make(chan servedCall, 1)
+	procedure := serving(t, tm, 0, "~/sealed", serveOptions{confidential: stationlink.ConfidentialRequired},
+		func(c servedCall) { calls <- c })
+	caller, m := tm.node(t, 1, false, false)
+	got, err := call(context.Background(), caller, tm.realm.ID, procedure, cbor.Text("hi"), [32]byte{}, m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Sealed != 1 || got.SealKeyID == "" {
+		t.Fatalf("report sealed=%d seal_key_id=%q, want 1 and a key", got.Sealed, got.SealKeyID)
+	}
+	if want := strings.TrimPrefix(strings.SplitN(procedure, "/", 2)[0], "~"); got.Provider != want {
+		t.Fatalf("report provider %q, want %q", got.Provider, want)
+	}
+	if c := <-calls; c.Sealed != 1 {
+		t.Fatalf("the provider saw sealed=%d, want 1", c.Sealed)
+	}
+}
+
+// A provider serving with confidential off names no key: the call goes in the
+// clear and the report says so, with no key.
+func TestACallToAClearProviderReportsNoSeal(t *testing.T) {
+	tm := newTestMesh(t)
+	calls := make(chan servedCall, 1)
+	procedure := serving(t, tm, 0, "~/clear", serveOptions{confidential: stationlink.ConfidentialOff},
+		func(c servedCall) { calls <- c })
+	caller, m := tm.node(t, 1, false, false)
+	got, err := call(context.Background(), caller, tm.realm.ID, procedure, cbor.Text("hi"), [32]byte{}, m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Sealed != 0 || got.SealKeyID != "" {
+		t.Fatalf("report sealed=%d seal_key_id=%q, want 0 and no key", got.Sealed, got.SealKeyID)
+	}
+	if c := <-calls; c.Sealed != 0 {
+		t.Fatalf("the provider saw sealed=%d, want 0", c.Sealed)
+	}
+}
+
+func TestTheConfidentialFlagTakesThreeValues(t *testing.T) {
+	for text, want := range map[string]stationlink.Confidentiality{
+		"preferred": stationlink.ConfidentialPreferred,
+		"required":  stationlink.ConfidentialRequired,
+		"off":       stationlink.ConfidentialOff,
+	} {
+		got, err := confidentialFlag(text)
+		if err != nil || got != want {
+			t.Fatalf("%q: got %v, %v", text, got, err)
+		}
+	}
+	if _, err := confidentialFlag("maybe"); err == nil {
+		t.Fatal("an unknown value was taken")
 	}
 }
 

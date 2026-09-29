@@ -123,6 +123,9 @@ type meshFlags struct {
 	profile   string
 	ephemeral bool
 	timeout   time.Duration
+	// kemAdvertise gives the node a KEM keyring and names its key in the
+	// advertisements it serves (serve sets it unless -confidential off).
+	kemAdvertise bool
 }
 
 func (m *meshFlags) register(fs *flag.FlagSet, withRealm bool) {
@@ -188,7 +191,8 @@ func (m *meshFlags) connect(ctx context.Context, key *identity.NodeKey, onLink f
 	}
 	ctx, cancel := context.WithTimeout(ctx, m.timeout)
 	defer cancel()
-	return pool.Connect(ctx, m.seeds, pool.Opts{IdentityKey: key, RealmTrust: trust, OnLinkEvent: onLink})
+	return pool.Connect(ctx, m.seeds, pool.Opts{IdentityKey: key, RealmTrust: trust, OnLinkEvent: onLink,
+		KEMAdvertise: m.kemAdvertise})
 }
 
 // join is key() then connect(): the node on the mesh.

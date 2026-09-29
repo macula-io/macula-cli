@@ -13,23 +13,25 @@
 </p>
 
 <p align="center">
-  <strong>Test, monitor and use the macula 12 mesh from the command line</strong>
+  <strong>Test, monitor and use the macula 13 mesh from the command line</strong>
 </p>
 
 ---
 
 ## What is macula-cli?
 
-A scriptable client of the macula 12 mesh: one Go binary, built on
+A scriptable client of the macula 13 mesh: one Go binary, built on
 [macula-go](https://github.com/macula-io/macula-go), that links to real
 stations and reports exactly what happened. It has no interactive mode by
 design. Its consumers are scripts and agents that parse `-json` output, and
 every command prints the same data either way.
 
-macula 12 is the post-quantum wire: ML-DSA-87 identities (the ML-DSA-87 +
+macula 13 is the post-quantum wire: ML-DSA-87 identities (the ML-DSA-87 +
 RSA-PSS-4096 composite in `pq_hybrid`, the fleet's profile), ML-KEM hybrid key
-exchange, signed requests, and seeds pinned by the node_id each station must
-prove. Releases before 0.9.0 spoke the retired 10.x wire and cannot reach the
+exchange, signed requests, seeds pinned by the node_id each station must
+prove, and end-to-end sealing of calls to a provider that advertises a KEM
+key. Links dial handshake v5 and fall back to v4 only for a station never seen
+on v5. Releases before 0.9.0 spoke the retired 10.x wire and cannot reach the
 current fleet.
 
 ## Install
@@ -82,9 +84,9 @@ a few seconds). `-ephemeral` uses a key made for the run and never saved;
 
 | Command | What it does |
 |---------|--------------|
-| `connect` | Resolve the seed, then link to its station over the macula 12 handshake, refusing a station that does not prove the pinned node_id |
-| `call <procedure>` | Call a procedure by direct dial: to any trusted provider, or `-provider <node_id>` |
-| `serve <procedure>` | Serve a procedure, echoing each payload or answering `-reply`, until stopped (`-once`, `-for`) |
+| `connect` | Resolve the seed, then link to its station over the post-quantum handshake (v5; v4 to a station not yet on v5), refusing a station that does not prove the pinned node_id |
+| `call <procedure>` | Call a procedure by direct dial: to any trusted provider, or `-provider <node_id>`. Sealed end to end when the provider advertises a KEM key; the seal report (`sealed`, `provider`, `seal_key_id`) says which |
+| `serve <procedure>` | Serve a procedure, echoing each payload or answering `-reply`, until stopped (`-once`, `-for`). `-confidential preferred` (default) advertises a KEM key and answers sealed calls sealed, `required` also refuses clear calls, `off` serves in the clear; each call reports `sealed` |
 | `pubsub publish <topic>` | Publish one payload |
 | `pubsub watch <topic>` | Print each verified event (`-count`, `-for`) |
 | `stream probe` | A bidirectional streaming round trip between two fresh nodes, through their stations |
@@ -142,7 +144,7 @@ go test ./...
 ```
 
 Every command's core is tested against macula-go's in-process teststation (two
-macula 12 stations sharing a DHT, and a test realm with one org), and
+stations speaking handshake v5 and v4, sharing a DHT, and a test realm with one org), and
 `realm join` against an HTTP realm that verifies the proof as macula-realm
 does. No test touches the network. `scripts/live_check.sh` runs one check
 against a fleet station with keys made for the run: connect, node records,
@@ -154,7 +156,7 @@ release.
 
 ## Relationship to other repos
 
-- [macula-go](https://github.com/macula-io/macula-go): the macula 12 node this
+- [macula-go](https://github.com/macula-io/macula-go): the macula 13 node this
   CLI drives, and its teststation.
 - [macula-station](https://github.com/macula-io/macula-station): the stations
   it links to.

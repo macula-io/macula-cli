@@ -27,8 +27,9 @@ design. Its consumers are scripts and agents that parse `-json` output, and
 every command prints the same data either way.
 
 macula 13 is the post-quantum wire: ML-DSA-87 identities (the ML-DSA-87 +
-RSA-PSS-4096 composite in `pq_hybrid`, the fleet's profile), ML-KEM hybrid key
-exchange, signed requests, seeds pinned by the node_id each station must
+RSA-PSS-4096 composite in `pq_hybrid`, the fleet's profile), key exchange on
+SecP384r1MLKEM1024 alone (ML-KEM-1024 with P-384, which meets CNSA 2.0 and BSI
+TR-02102), signed requests, seeds pinned by the node_id each station must
 prove, and end-to-end sealing of calls to a provider that advertises a KEM
 key. Links dial handshake v5 and fall back to v4 only for a station never seen
 on v5. Releases before 0.9.0 spoke the retired 10.x wire and cannot reach the

@@ -46,7 +46,7 @@ macula-cli connect -seed 'station-fi-helsinki.macula.io:4433@004d1f47...'
 ```
 
 Resolves the seed's host, then links over the macula 12 handshake (QUIC with
-ML-KEM hybrid key exchange, then the v4 handshake). A station that does not
+key exchange on SecP384r1MLKEM1024 alone, then the v4 handshake). A station that does not
 prove the pinned node_id is refused.
 
 ## 3. `call`

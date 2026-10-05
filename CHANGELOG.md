@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.0] - 2026-10-05
+
+Every link now settles on SecP384r1MLKEM1024, the one hybrid key exchange
+group that meets both CNSA 2.0 (ML-KEM-1024 with P-384) and BSI TR-02102
+(hybrid only). Before, macula-cli landed on SecP256r1MLKEM768 with every
+station ([#4](https://github.com/macula-io/macula-cli/issues/4)).
+
+### Changed
+
+- macula-cli runs on macula-go v0.23.0, whose dial offers SecP384r1MLKEM1024
+  alone and refuses a handshake that settled on any other group. Go's
+  crypto/tls ignores the order of its group list and offered SecP256r1MLKEM768
+  first, and a station's rustls takes the client's first group, so v0.20.0's
+  two-group list always negotiated SecP256r1MLKEM768. A station that accepts
+  only SecP256r1MLKEM768 now fails in the handshake; every macula 12 station
+  accepts SecP384r1MLKEM1024.
+
 ## [0.10.1] - 2026-10-05
 
 ### Fixed

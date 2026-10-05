@@ -41,9 +41,14 @@ echo "== mcl-echo/echo";          out=$("$bin" call "${realmed[@]}" -payload '"h
 echo "$out"; [ "$out" = '"hello"' ] || { echo "live_check: mcl-echo answered $out" >&2; exit 1; }
 topic="mcl-cli/live/check/publication_heard_v1/$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"
 echo "== hear own publication on $topic"
-"$bin" pubsub watch "${realmed[@]}" -count 1 -for 45s -json "$topic" > "$(dirname "$bin")/heard.json" &
+# Publish only once the watcher says its subscription stands: a fixed sleep
+# lost the round whenever keygen plus connect took longer (issue #3).
+ready="$(dirname "$bin")/watching"
+"$bin" pubsub watch "${realmed[@]}" -count 1 -for 90s -json "$topic" \
+  > "$(dirname "$bin")/heard.json" 2> "$ready" &
 watcher=$!
-sleep 8
+for _ in $(seq 60); do grep -q '^watching ' "$ready" && break; sleep 1; done
+grep -q '^watching ' "$ready" || { echo "live_check: the watcher never subscribed" >&2; cat "$ready" >&2; exit 1; }
 "$bin" pubsub publish "${realmed[@]}" -payload '"heard"' "$topic"
 wait "$watcher"
 grep -q '"heard"' "$(dirname "$bin")/heard.json" || { echo "live_check: the publication was not heard" >&2; cat "$(dirname "$bin")/heard.json"; exit 1; }

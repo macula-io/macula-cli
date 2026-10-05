@@ -143,10 +143,11 @@ func runWatch(args []string) int {
 		return report.Fail(m.jsonOut, err)
 	}
 	defer p.Close()
+	// The ready line goes to stderr in both modes: with -json, stdout carries
+	// only envelopes, and a script needs this line to know the subscription
+	// stands before it publishes.
 	_, err = watch(ctx, p, realm, fs.Arg(0), *count, func() {
-		if !m.jsonOut {
-			fmt.Fprintf(os.Stderr, "watching %s as node %x\n", fs.Arg(0), p.NodeID())
-		}
+		fmt.Fprintf(os.Stderr, "watching %s as node %x\n", fs.Arg(0), p.NodeID())
 	}, func(e heardEvent) {
 		report.Ok(m.jsonOut, e, func(w io.Writer) {
 			fmt.Fprintf(w, "%s seq %d from %s: %s\n", e.Topic, e.Seq, e.Publisher, e.Payload)

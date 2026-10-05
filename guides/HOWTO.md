@@ -92,7 +92,9 @@ macula-cli pubsub publish -seed "$SEED" -realm io.macula -payload '{"id": 7}' mc
 ```
 
 `watch` prints each verified event once, however many links deliver it
-(`-count`, `-for`); with `-json`, one envelope per event. `publish` takes
+(`-count`, `-for`); with `-json`, one envelope per event. Once its
+subscription stands it writes `watching <topic> as node <id>` to stderr, in
+both modes, so a script can publish after that line. `publish` takes
 `-payload`, `-payload-file` and `-ttl`. Name topics after a kind of fact and
 put ids in the payload.
 

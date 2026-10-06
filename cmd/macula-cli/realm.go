@@ -86,13 +86,14 @@ func realmName(text string) (string, error) {
 }
 
 // requestJoin asks the realm at baseURL for a join session for key's device,
-// signed for the realm named realmName. A positive membershipTTL asks for a
-// membership that lasts that long (whole seconds, a field the proof signs; the
-// realm clamps it to its cap); zero leaves the realm's default.
+// signed for the realm named realmName. A membershipTTL of at least a second
+// asks for a membership that lasts that long (whole seconds, a field the proof
+// signs; the realm clamps it to its cap); anything shorter leaves the realm's
+// default.
 func requestJoin(ctx context.Context, client *http.Client, baseURL, realmName string, key *identity.NodeKey,
 	deviceInfo map[string]any, membershipTTL time.Duration) (joinSession, error) {
 	body := map[string]any{"public_key": base64.StdEncoding.EncodeToString(key.PublicKey()), "device_info": deviceInfo}
-	if membershipTTL > 0 {
+	if membershipTTL >= time.Second {
 		body["membership_ttl_seconds"] = int64(membershipTTL / time.Second)
 	}
 	unsigned, err := json.Marshal(body)

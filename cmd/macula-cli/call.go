@@ -26,13 +26,21 @@ type callResult struct {
 	value     cbor.Value
 }
 
+// presented is what a call shows a gated procedure: a UCAN for this node and
+// its chain's parents (none for an open procedure).
+type presented struct {
+	token  []byte
+	proofs [][]byte
+}
+
 // call calls procedure in realm, at provider when it is not zero, by direct
-// dial. It seals to the key the provider's advertisement names, if any.
+// dial, presenting chain's token when it has one. It seals to the key the
+// provider's advertisement names, if any.
 func call(ctx context.Context, p *pool.Pool, realm [32]byte, procedure string, payload cbor.Value, provider [32]byte,
-	m *meshFlags) (callResult, error) {
+	m *meshFlags, chain presented) (callResult, error) {
 	procedure = ownProcedure(procedure, p.NodeID())
 	result, rep, err := p.CallReport(ctx, pool.Call{Realm: realm, Procedure: procedure, Provider: provider,
-		Payload: payload, Timeout: m.timeout})
+		Payload: payload, Timeout: m.timeout, Token: chain.token, Proofs: chain.proofs})
 	if err != nil {
 		return callResult{}, err
 	}
@@ -59,6 +67,7 @@ func runCall(args []string) int {
 	payloadText := fs.String("payload", "null", "the payload as JSON (bytes as {\"$bytes\": base64}); no booleans")
 	payloadFile := fs.String("payload-file", "", "read the payload JSON from this file instead")
 	providerHex := fs.String("provider", "", "call this provider's node_id (64 hex); any trusted provider when absent")
+	ucanFile := fs.String("ucan-file", "", "present the UCAN chain in this file (token, then its proofs, a line each) to a gated procedure")
 	fs.Usage = func() {
 		fmt.Fprintln(fs.Output(), "usage: macula-cli call -seed host:port@<node_id> -realm <realm> [-realm-key <hex|@file>] [flags] <procedure>")
 		fmt.Fprintln(fs.Output(), "       a procedure '~/<name>' (quoted) is <name> in this node's own namespace")
@@ -81,13 +90,19 @@ func runCall(args []string) int {
 			return report.Usage(m.jsonOut, fmt.Errorf("-provider: %w", err))
 		}
 	}
+	var chain presented
+	if *ucanFile != "" {
+		if chain.token, chain.proofs, err = readChain(*ucanFile); err != nil {
+			return report.Usage(m.jsonOut, err)
+		}
+	}
 	ctx := context.Background()
 	p, err := m.join(ctx)
 	if err != nil {
 		return report.Fail(m.jsonOut, err)
 	}
 	defer p.Close()
-	result, err := call(ctx, p, realm, fs.Arg(0), payload, provider, &m)
+	result, err := call(ctx, p, realm, fs.Arg(0), payload, provider, &m, chain)
 	if err != nil {
 		return report.Fail(m.jsonOut, err)
 	}

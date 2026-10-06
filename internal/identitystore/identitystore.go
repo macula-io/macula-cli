@@ -27,6 +27,17 @@ func DefaultPath() (string, error) {
 	return filepath.Join(base, "macula-cli", "identity.key"), nil
 }
 
+// PersonPath is the person key file used when -person is not given, beside
+// the node key: the key a person joins a realm with and signs their clients'
+// notes with. It never connects.
+func PersonPath() (string, error) {
+	base, err := os.UserConfigDir()
+	if err != nil {
+		return "", fmt.Errorf("identitystore: resolve the user config directory: %w", err)
+	}
+	return filepath.Join(base, "macula-cli", "person.key"), nil
+}
+
 // LoadOrCreate loads the key at path, or creates one there when the file does
 // not exist, and says whether it created it: a new key solves the admission
 // puzzle, which takes a few seconds. A file holding anything but a macula 12

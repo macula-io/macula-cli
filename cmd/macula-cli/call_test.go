@@ -45,7 +45,7 @@ func TestACallReachesAnOrgProcedureOnAnotherStationAndEchoes(t *testing.T) {
 	procedure := serving(t, tm, 0, tm.realm.Org+"/echo", serveOptions{}, nil)
 	caller, m := tm.node(t, 1, true, false)
 	payload := cbor.Map([]cbor.MapEntry{{Key: cbor.Text("n"), Val: cbor.Int(-3)}, {Key: cbor.Text("b"), Val: cbor.Bytes([]byte{1})}})
-	got, err := call(context.Background(), caller, tm.realm.ID, procedure, payload, [32]byte{}, m)
+	got, err := call(context.Background(), caller, tm.realm.ID, procedure, payload, [32]byte{}, m, presented{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +60,7 @@ func TestServeAnswersAFixedReplyAndReportsTheCaller(t *testing.T) {
 	calls := make(chan servedCall, 1)
 	procedure := serving(t, tm, 0, "~/ping", serveOptions{reply: &reply}, func(c servedCall) { calls <- c })
 	caller, m := tm.node(t, 1, false, false)
-	got, err := call(context.Background(), caller, tm.realm.ID, procedure, cbor.Text("ping"), [32]byte{}, m)
+	got, err := call(context.Background(), caller, tm.realm.ID, procedure, cbor.Text("ping"), [32]byte{}, m, presented{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +81,7 @@ func TestACallToAKeyedProviderIsSealedAndReportsTheKey(t *testing.T) {
 	procedure := serving(t, tm, 0, "~/sealed", serveOptions{confidential: stationlink.ConfidentialRequired},
 		func(c servedCall) { calls <- c })
 	caller, m := tm.node(t, 1, false, false)
-	got, err := call(context.Background(), caller, tm.realm.ID, procedure, cbor.Text("hi"), [32]byte{}, m)
+	got, err := call(context.Background(), caller, tm.realm.ID, procedure, cbor.Text("hi"), [32]byte{}, m, presented{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,7 +104,7 @@ func TestACallToAClearProviderReportsNoSeal(t *testing.T) {
 	procedure := serving(t, tm, 0, "~/clear", serveOptions{confidential: stationlink.ConfidentialOff},
 		func(c servedCall) { calls <- c })
 	caller, m := tm.node(t, 1, false, false)
-	got, err := call(context.Background(), caller, tm.realm.ID, procedure, cbor.Text("hi"), [32]byte{}, m)
+	got, err := call(context.Background(), caller, tm.realm.ID, procedure, cbor.Text("hi"), [32]byte{}, m, presented{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,7 +145,7 @@ func TestServeOnceStopsAfterOneCall(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	caller, m := tm.node(t, 1, false, false)
-	if _, err := call(context.Background(), caller, tm.realm.ID, full, cbor.Int(1), [32]byte{}, m); err != nil {
+	if _, err := call(context.Background(), caller, tm.realm.ID, full, cbor.Int(1), [32]byte{}, m, presented{}); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -161,10 +161,10 @@ func TestServeOnceStopsAfterOneCall(t *testing.T) {
 func TestAnUnpinnedRealmAndAnUnservedProcedureAreRefused(t *testing.T) {
 	tm := newTestMesh(t)
 	caller, m := tm.node(t, 0, true, false)
-	if _, err := call(context.Background(), caller, [32]byte{1}, tm.realm.Org+"/echo", cbor.Null(), [32]byte{}, m); err == nil {
+	if _, err := call(context.Background(), caller, [32]byte{1}, tm.realm.Org+"/echo", cbor.Null(), [32]byte{}, m, presented{}); err == nil {
 		t.Fatal("a call in a realm with no pinned key went through")
 	}
-	_, err := call(context.Background(), caller, tm.realm.ID, tm.realm.Org+"/nothing", cbor.Null(), [32]byte{}, m)
+	_, err := call(context.Background(), caller, tm.realm.ID, tm.realm.Org+"/nothing", cbor.Null(), [32]byte{}, m, presented{})
 	var provider *stationlink.ProviderError
 	if err == nil || errors.As(err, &provider) {
 		t.Fatalf("%v, want no provider", err)

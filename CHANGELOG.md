@@ -5,6 +5,35 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.0] - 2026-10-06
+
+One person joins a realm once, and each of their clients can call
+realm-gated procedures with a short note from them
+([macula-architecture#15](https://github.com/macula-io/macula-architecture/issues/15)).
+
+### Added
+
+- `person init`: a person key (`person.key` beside the node key, or
+  `-person`). It signs, and never connects.
+- `person join -realm <name>`: the realm's join session for the person key;
+  confirm at the join URL signed in as yourself. The membership UCAN the realm
+  issues to that key is kept beside it (`person/<person id>/<realm>.ucan`, owner-only, written atomically),
+  after checking it is the person's.
+- `person delegate -realm <name> -realm-key ... -to <client node_id>`: a note
+  (a UCAN from the person to the client, its parent the membership, granting
+  what the membership grants) for `-ttl` (default 24h, at most 168h, never
+  past the membership's expiry), written as a chain file (`-out`): the note,
+  then the membership. It refuses a membership that is not the person's, not
+  signed by that realm key, or expired, and checks the note as a gate would
+  before handing it out. A note is revoked only by its expiry.
+- `call -ucan-file <file>`: presents a chain (the token, then its proofs, a
+  line each) to a gated procedure.
+
+### Changed
+
+- macula-cli runs on macula-go v0.24.0, whose UCAN minting refuses an expiry
+  beyond ten years or a window that never opens.
+
 ## [0.11.0] - 2026-10-05
 
 Every link now settles on SecP384r1MLKEM1024, the one hybrid key exchange

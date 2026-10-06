@@ -46,6 +46,8 @@ func run(args []string) int {
 		return runIdentity(args[1:])
 	case "realm":
 		return runRealm(args[1:])
+	case "person":
+		return runPerson(args[1:])
 	case "-v", "--version", "version":
 		fmt.Printf("macula-cli %s (commit %s, built %s)\n", version, commit, date)
 		return 0
@@ -83,6 +85,11 @@ A procedure '~/<name>' (quoted, or the shell expands ~) is <name> in this node's
   macula-cli realm status <session id>                  a join session's state
   macula-cli realm membership -seed ... -realm <name> -realm-key ...
                                                         this node's membership UCAN, over the mesh
+  macula-cli person init                               your person key: it signs notes, never connects
+  macula-cli person join -realm <name>                 join the realm once, as yourself; keeps the membership
+  macula-cli person delegate -realm <name> -realm-key ... -to <client node_id> [-ttl 24h] [-out file]
+                                                        a short-lived note letting one of your clients act as your
+                                                        membership; call -ucan-file presents it
 
 Run "macula-cli <command> -h" for a command's flags.
 `)

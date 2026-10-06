@@ -281,3 +281,11 @@ func TestRequireMemberNeedsTheRealmKeyAndACan(t *testing.T) {
 }
 
 func ptr[T any](v T) *T { return &v }
+
+func TestAnEmptyRequireMemberIsRefusedNotServedOpen(t *testing.T) {
+	code, _, errs := runCaptured(t, "serve", "-require-member", "", "-realm", "io.macula", "-realm-key", "00",
+		"-seed", "127.0.0.1:1@"+strings.Repeat("0", 64), "acme/members_only")
+	if code != 2 || !strings.Contains(errs, "-require-member") {
+		t.Fatalf("exit %d, %q: want the empty gate refused by name", code, errs)
+	}
+}

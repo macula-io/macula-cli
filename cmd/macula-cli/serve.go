@@ -59,7 +59,7 @@ func memberPolicy(can, realmKeyText, profileText string) (ucan.Policy, error) {
 	if err != nil {
 		return nil, err
 	}
-	return ucan.RealmMemberRequired{KeyID: identity.KeyIDOf(key, p), Can: can}, nil
+	return ucan.RealmMemberRequired{KeyID: identity.KeyIDOf(key, p), Can: strings.TrimSpace(can)}, nil
 }
 
 // confidentialFlag reads -confidential: preferred (seal when the caller can),
@@ -137,7 +137,11 @@ func runServe(args []string) int {
 		return report.Usage(m.jsonOut, err)
 	}
 	o.confidential = confidential
-	if *requireMember != "" {
+	// Presence, not value: -require-member "" (an unset variable in a script)
+	// must be refused, never serve the procedure open.
+	gated := false
+	fs.Visit(func(f *flag.Flag) { gated = gated || f.Name == "require-member" })
+	if gated {
 		if strings.HasPrefix(fs.Arg(0), "~") {
 			return report.Usage(m.jsonOut, errors.New("-require-member gates an <org>/<name> procedure; a node's own namespace cannot be gated"))
 		}

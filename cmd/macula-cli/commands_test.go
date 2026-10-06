@@ -203,6 +203,9 @@ type fakeRealm struct {
 	admitted atomic.Bool
 	polls    atomic.Int32
 	t        *testing.T
+	// ttl is the membership_ttl_seconds the last verified request carried,
+	// nil when it carried none.
+	ttl *int64
 }
 
 func (f *fakeRealm) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -214,6 +217,11 @@ func (f *fakeRealm) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			_ = json.NewEncoder(w).Encode(map[string]string{"error": reason})
 			return
 		}
+		var asked struct {
+			TTL *int64 `json:"membership_ttl_seconds"`
+		}
+		_ = json.Unmarshal(body, &asked)
+		f.ttl = asked.TTL
 		w.WriteHeader(http.StatusCreated)
 		_ = json.NewEncoder(w).Encode(joinSession{SessionID: "s-1", JoinURL: "https://realm.test/join/s-1", ExpiresAt: "later"})
 	case r.Method == http.MethodGet && r.URL.Path == "/api/v1/join/sessions/s-1":
@@ -265,19 +273,35 @@ func TestAJoinRequestCarriesAV2ProofTheRealmVerifies(t *testing.T) {
 	server := httptest.NewServer(realm)
 	defer server.Close()
 	session, err := requestJoin(context.Background(), server.Client(), server.URL, "io.macula", freshKey(t),
-		map[string]any{"hostname": "laptop.local", "note": nil, "n": 3})
+		map[string]any{"hostname": "laptop.local", "note": nil, "n": 3}, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if session.SessionID != "s-1" || session.JoinURL == "" {
 		t.Fatalf("session %+v", session)
 	}
+	if realm.ttl != nil {
+		t.Fatalf("asked for a membership of %ds without being told to", *realm.ttl)
+	}
+}
+
+func TestAJoinAsksForItsMembershipLifetimeInsideTheSignedRequest(t *testing.T) {
+	realm := &fakeRealm{name: "io.macula", t: t}
+	server := httptest.NewServer(realm)
+	defer server.Close()
+	if _, err := requestJoin(context.Background(), server.Client(), server.URL, "io.macula", freshKey(t),
+		map[string]any{"hostname": "h"}, 720*time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if realm.ttl == nil || *realm.ttl != 2592000 {
+		t.Fatalf("membership_ttl_seconds %v, want 2592000 under the proof", realm.ttl)
+	}
 }
 
 func TestAJoinSignedForAnotherRealmIsRefused(t *testing.T) {
 	server := httptest.NewServer(&fakeRealm{name: "io.macula", t: t})
 	defer server.Close()
-	_, err := requestJoin(context.Background(), server.Client(), server.URL, "elsewhere", freshKey(t), map[string]any{"hostname": "h"})
+	_, err := requestJoin(context.Background(), server.Client(), server.URL, "elsewhere", freshKey(t), map[string]any{"hostname": "h"}, 0)
 	var refusal *realmRefusal
 	if !errors.As(err, &refusal) || refusal.Reason != "bad_proof" {
 		t.Fatalf("%v, want the realm's bad_proof", err)

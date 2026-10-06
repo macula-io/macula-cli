@@ -178,6 +178,8 @@ func runPersonJoin(args []string) int {
 	realmURL := fs.String("realm-url", "https://realm.macula.io", "the realm's HTTP base URL")
 	wait := fs.Duration("wait", 10*time.Minute, "how long to wait for you to confirm at the join URL")
 	timeout := fs.Duration("timeout", 30*time.Second, "how long to wait for each realm request")
+	membershipTTL := fs.Duration("membership-ttl", 720*time.Hour,
+		"how long to ask the membership to last; the realm clamps it to its cap (30 days) and the join page shows it")
 	fs.Usage = func() {
 		fmt.Fprintln(fs.Output(), "usage: macula-cli person join -realm <realm name> [flags]")
 		fmt.Fprintln(fs.Output(), "       asks the realm to admit you, the person: confirm at the join URL, signed in as yourself;")
@@ -194,6 +196,9 @@ func runPersonJoin(args []string) int {
 	if *wait <= 0 {
 		return report.Usage(f.jsonOut, errors.New("-wait must be positive: the membership is kept once you confirm"))
 	}
+	if *membershipTTL < time.Second {
+		return report.Usage(f.jsonOut, errors.New("-membership-ttl must be at least 1s: how long your membership lasts"))
+	}
 	key, path, err := f.load(true)
 	if err != nil {
 		return report.Fail(f.jsonOut, err)
@@ -206,7 +211,7 @@ func runPersonJoin(args []string) int {
 	info := map[string]any{"hostname": "person key on " + host, "os": runtime.GOOS + "/" + runtime.GOARCH, "version": "macula-cli " + version}
 	ctx := context.Background()
 	client := &http.Client{Timeout: *timeout}
-	session, err := requestJoin(ctx, client, *realmURL, name, key, info)
+	session, err := requestJoin(ctx, client, *realmURL, name, key, info, *membershipTTL)
 	if err != nil {
 		return report.Fail(f.jsonOut, err)
 	}

@@ -86,10 +86,15 @@ func realmName(text string) (string, error) {
 }
 
 // requestJoin asks the realm at baseURL for a join session for key's device,
-// signed for the realm named realmName.
+// signed for the realm named realmName. A positive membershipTTL asks for a
+// membership that lasts that long (whole seconds, a field the proof signs; the
+// realm clamps it to its cap); zero leaves the realm's default.
 func requestJoin(ctx context.Context, client *http.Client, baseURL, realmName string, key *identity.NodeKey,
-	deviceInfo map[string]any) (joinSession, error) {
+	deviceInfo map[string]any, membershipTTL time.Duration) (joinSession, error) {
 	body := map[string]any{"public_key": base64.StdEncoding.EncodeToString(key.PublicKey()), "device_info": deviceInfo}
+	if membershipTTL > 0 {
+		body["membership_ttl_seconds"] = int64(membershipTTL / time.Second)
+	}
 	unsigned, err := json.Marshal(body)
 	if err != nil {
 		return joinSession{}, err
@@ -246,7 +251,7 @@ func runRealmJoin(args []string) int {
 	info := map[string]any{"hostname": host, "os": runtime.GOOS + "/" + runtime.GOARCH, "version": "macula-cli " + version}
 	ctx := context.Background()
 	client := &http.Client{Timeout: m.timeout}
-	session, err := requestJoin(ctx, client, *realmURL, name, key, info)
+	session, err := requestJoin(ctx, client, *realmURL, name, key, info, 0)
 	if err != nil {
 		return report.Fail(m.jsonOut, err)
 	}

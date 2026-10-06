@@ -102,7 +102,7 @@ a few seconds). `-ephemeral` uses a key made for the run and never saved;
 | `realm status <session>` | A join session's state, and what the realm granted once confirmed |
 | `realm membership` | This node's membership UCAN, over the mesh; the node must be admitted |
 | `person init` | Your person key (`person.key`, beside the node key): it signs your clients' notes and never connects |
-| `person join` | Join a realm once, as yourself: confirm at the join URL signed in as you; keeps the membership the realm issues to your person key |
+| `person join` | Join a realm once, as yourself: confirm at the join URL signed in as you; keeps the membership the realm issues to your person key, asking it to last `-membership-ttl` (default 720h, the realm's 30-day cap) |
 | `person delegate -to <node_id>` | A note letting one of your clients act as your membership, for `-ttl` (default 24h, at most 168h, never past the membership), as a chain file (`-out`) |
 
 ### One person, many clients
@@ -113,13 +113,18 @@ each of your clients a short note instead of joining every device:
 
 ```bash
 macula-cli person init                                  # once: prints your person id
-macula-cli person join -realm io.macula                 # once: confirm at the join URL
+macula-cli person join -realm io.macula                 # once: confirm at the join URL (lasts up to 30 days)
 macula-cli identity                                     # this client's node_id
 macula-cli person delegate -realm io.macula -realm-key @io_macula.key \
   -to <client node_id> -ttl 24h -out note.ucan
 macula-cli call -seed ... -realm io.macula -realm-key @io_macula.key \
   -ucan-file note.ucan <org>/<procedure>
 ```
+
+`person join` asks for a membership of `-membership-ttl` (default 720h); the
+realm clamps it to its cap, the join page shows the lifetime before you
+confirm, and a realm older than this ignores the ask and keeps its own default
+(4 hours). The printed expiry is what was minted.
 
 `person delegate` refuses a membership that is not yours, not signed by that
 realm key or already expired, and checks the note as a gate would before it

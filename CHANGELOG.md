@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `person join -membership-ttl` (default 720h): asks the realm for a membership
+  that lasts that long, a field the join request's proof signs. The realm clamps
+  it to its cap (30 days) and shows it on the join page; a realm without the
+  field keeps its default (4 hours). `realm join` (a device) asks for nothing new.
+
 ## [0.12.0] - 2026-10-06
 
 One person joins a realm once, and each of their clients can call

@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `serve -require-member <can>`: serve an `<org>/<name>` procedure only to a
+  realm member, a caller whose UCAN chain is rooted at `-realm-key` and grants
+  that can (the `realm_member_required` gate fleet services name). Without
+  `-realm-key`, or on a node's own namespace, it is refused by name.
+
 ## [0.13.0] - 2026-10-06
 
 ### Added

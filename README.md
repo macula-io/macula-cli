@@ -87,7 +87,7 @@ a few seconds). `-ephemeral` uses a key made for the run and never saved;
 |---------|--------------|
 | `connect` | Resolve the seed, then link to its station over the post-quantum handshake (v5; v4 to a station not yet on v5), refusing a station that does not prove the pinned node_id |
 | `call <procedure>` | Call a procedure by direct dial: to any trusted provider, or `-provider <node_id>`. Sealed end to end when the provider advertises a KEM key; the seal report (`sealed`, `provider`, `seal_key_id`) says which. `-ucan-file` presents a UCAN chain (a note from `person delegate`) to a gated procedure |
-| `serve <procedure>` | Serve a procedure, echoing each payload or answering `-reply`, until stopped (`-once`, `-for`). `-confidential preferred` (default) advertises a KEM key and answers sealed calls sealed, `required` also refuses clear calls, `off` serves in the clear; each call reports `sealed` |
+| `serve <procedure>` | Serve a procedure, echoing each payload or answering `-reply`, until stopped (`-once`, `-for`). `-confidential preferred` (default) advertises a KEM key and answers sealed calls sealed, `required` also refuses clear calls, `off` serves in the clear; each call reports `sealed`. `-require-member <can>` serves only realm members: a caller whose UCAN chain, rooted at `-realm-key`, grants that can (an `<org>/<name>` procedure only) |
 | `pubsub publish <topic>` | Publish one payload |
 | `pubsub watch <topic>` | Print each verified event (`-count`, `-for`) |
 | `stream probe` | A bidirectional streaming round trip between two fresh nodes, through their stations |

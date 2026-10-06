@@ -2,17 +2,22 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/macula-io/macula-go/cbor"
+	"github.com/macula-io/macula-go/identity"
 	"github.com/macula-io/macula-go/pool"
+	"github.com/macula-io/macula-go/profile"
 	"github.com/macula-io/macula-go/stationlink"
+	"github.com/macula-io/macula-go/ucan"
 
 	"github.com/macula-io/macula-cli/internal/report"
 	"github.com/macula-io/macula-cli/internal/wirevalue"
@@ -32,6 +37,29 @@ type serveOptions struct {
 	reply        *cbor.Value // nil: echo the caller's payload
 	once         bool        // stop after answering one call
 	confidential stationlink.Confidentiality
+	policy       ucan.Policy // nil: serve any caller
+}
+
+// memberPolicy is -require-member: serve only a caller whose UCAN chain is
+// rooted at the realm key (-realm-key, as carried) and grants can, the gate a
+// fleet service names (realm_member_required). The key id is taken under the
+// node's profile, as the gate checks it.
+func memberPolicy(can, realmKeyText, profileText string) (ucan.Policy, error) {
+	if strings.TrimSpace(can) == "" {
+		return nil, errors.New("-require-member: name the capability a member's chain must grant (member/email-verified)")
+	}
+	if realmKeyText == "" {
+		return nil, errors.New("-require-member needs -realm-key: the gate is rooted at the realm's key")
+	}
+	key, err := realmKey(realmKeyText)
+	if err != nil {
+		return nil, err
+	}
+	p, err := profile.Parse(profileText)
+	if err != nil {
+		return nil, err
+	}
+	return ucan.RealmMemberRequired{KeyID: identity.KeyIDOf(key, p), Can: can}, nil
 }
 
 // confidentialFlag reads -confidential: preferred (seal when the caller can),
@@ -74,7 +102,7 @@ func serve(ctx context.Context, p *pool.Pool, realm [32]byte, procedure string, 
 		return r.Payload, nil
 	}
 	served, err := p.Serve(ctx, pool.Offer{Realm: realm, Procedure: procedure, Handler: handler,
-		Confidential: o.confidential})
+		Confidential: o.confidential, Policy: o.policy})
 	if err != nil {
 		return procedure, nil, err
 	}
@@ -91,6 +119,8 @@ func runServe(args []string) int {
 	forTime := fs.Duration("for", 0, "stop serving after this long (default: until interrupted)")
 	confidentialText := fs.String("confidential", "preferred",
 		"preferred: advertise a KEM key and answer sealed calls sealed; required: also refuse clear calls; off: clear only")
+	requireMember := fs.String("require-member", "",
+		"serve only realm members: a caller whose UCAN chain, rooted at -realm-key, grants this can (member/email-verified)")
 	fs.Usage = func() {
 		fmt.Fprintln(fs.Output(), "usage: macula-cli serve -seed host:port@<node_id> -realm <realm> [-realm-key <hex|@file>] [flags] <procedure>")
 		fmt.Fprintln(fs.Output(), "       '~/<name>' (quoted) serves <name> in this node's own namespace, which needs no org and no realm key;")
@@ -107,6 +137,14 @@ func runServe(args []string) int {
 		return report.Usage(m.jsonOut, err)
 	}
 	o.confidential = confidential
+	if *requireMember != "" {
+		if strings.HasPrefix(fs.Arg(0), "~") {
+			return report.Usage(m.jsonOut, errors.New("-require-member gates an <org>/<name> procedure; a node's own namespace cannot be gated"))
+		}
+		if o.policy, err = memberPolicy(*requireMember, m.realmKey, m.profile); err != nil {
+			return report.Usage(m.jsonOut, err)
+		}
+	}
 	m.kemAdvertise = confidential != stationlink.ConfidentialOff
 	if *replyText != "" {
 		v, err := wirevalue.FromJSON([]byte(*replyText))

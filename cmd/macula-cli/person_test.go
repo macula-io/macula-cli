@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"os"
 	"path/filepath"
@@ -242,3 +243,41 @@ func TestAChainFileIsTheTokenThenItsProofs(t *testing.T) {
 		t.Fatal("an empty chain file was read")
 	}
 }
+
+func TestServeRequireMemberServesANoteAndRefusesNone(t *testing.T) {
+	tm := newTestMesh(t)
+	policy, err := memberPolicy(memberCan, hex.EncodeToString(tm.realm.RealmKey()), "pq_pure")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var entered atomic.Int64
+	procedure := serving(t, tm, 0, tm.realm.Org+"/members_only", serveOptions{policy: policy, reply: ptr(cbor.Text("served"))},
+		func(servedCall) { entered.Add(1) })
+	client, m := tm.node(t, 1, true, false)
+	if _, err := call(context.Background(), client, tm.realm.ID, procedure, cbor.Null(), [32]byte{}, m, presented{}); providerCode(err) != "unauthorized" {
+		t.Fatalf("no note: %v", err)
+	}
+	person, membership := aPerson(t, tm, time.Now().Add(4*time.Hour))
+	chain, _, err := delegate(person, membership, tm.realm.RealmKey(), client.NodeID(), time.Hour, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := call(context.Background(), client, tm.realm.ID, procedure, cbor.Null(), [32]byte{}, m, chainOf(t, chain))
+	if err != nil || string(got.Result) != `"served"` {
+		t.Fatalf("with a note: %v, %v", got.Result, err)
+	}
+	if n := entered.Load(); n != 1 {
+		t.Fatalf("the handler ran %d times, want 1", n)
+	}
+}
+
+func TestRequireMemberNeedsTheRealmKeyAndACan(t *testing.T) {
+	if _, err := memberPolicy(memberCan, "", "pq_hybrid"); err == nil {
+		t.Fatal("a member gate with no -realm-key was accepted")
+	}
+	if _, err := memberPolicy(" ", "00", "pq_hybrid"); err == nil {
+		t.Fatal("a member gate with a blank can was accepted")
+	}
+}
+
+func ptr[T any](v T) *T { return &v }

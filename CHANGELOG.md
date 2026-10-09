@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `person bind -to <client node_id>` and `person unbind -to <client node_id>`: the realm admits one of your
+  nodes as your client, on its own membership sponsored by you (macula-realm#46 step 2, realm 0.3.5). The
+  request is signed by your person key over the mesh; the client renews its own token at your tier and ends
+  with your membership, at most 16 clients per person.
+
+### Removed
+
+- `person delegate` and its short-lived note. A client now has its own membership, which the realm ends with
+  the person; a note could only expire. `call -ucan-file` still presents any UCAN or chain.
+
 ## [0.14.0] - 2026-10-06
 
 ### Added

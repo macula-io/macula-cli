@@ -85,11 +85,13 @@ A procedure '~/<name>' (quoted, or the shell expands ~) is <name> in this node's
   macula-cli realm status <session id>                  a join session's state
   macula-cli realm membership -seed ... -realm <name> -realm-key ...
                                                         this node's membership UCAN, over the mesh
-  macula-cli person init                               your person key: it signs notes, never connects
+  macula-cli person init                               your person key: it signs binding requests, never connects
   macula-cli person join -realm <name>                 join the realm once, as yourself; keeps the membership
-  macula-cli person delegate -realm <name> -realm-key ... -to <client node_id> [-ttl 24h] [-out file]
-                                                        a short-lived note letting one of your clients act as your
-                                                        membership; call -ucan-file presents it
+  macula-cli person bind -seed ... -realm <name> -realm-key ... -to <client node_id>
+                                                        the realm admits that node as your client: it renews its
+                                                        own membership and ends with yours
+  macula-cli person unbind -seed ... -realm <name> -realm-key ... -to <client node_id>
+                                                        the realm ends that client's membership
 
 Run "macula-cli <command> -h" for a command's flags.
 `)

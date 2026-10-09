@@ -28,8 +28,8 @@ func DefaultPath() (string, error) {
 }
 
 // PersonPath is the person key file used when -person is not given, beside
-// the node key: the key a person joins a realm with and signs their clients'
-// notes with. It never connects.
+// the node key: the key a person joins a realm with and signs the requests
+// binding their clients with. It never connects.
 func PersonPath() (string, error) {
 	base, err := os.UserConfigDir()
 	if err != nil {

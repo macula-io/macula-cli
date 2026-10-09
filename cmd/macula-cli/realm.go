@@ -168,6 +168,16 @@ type membershipResult struct {
 	Result     rawJSON `json:"result"`
 }
 
+// proofValue is a device request proof as it goes on the wire.
+func proofValue(proof devicerequest.Proof) cbor.Value {
+	return cbor.Map([]cbor.MapEntry{
+		{Key: cbor.Text("v"), Val: cbor.Uint64(uint64(proof.V))},
+		{Key: cbor.Text("timestamp"), Val: cbor.Uint64(proof.Timestamp)},
+		{Key: cbor.Text("nonce"), Val: cbor.Text(proof.Nonce)},
+		{Key: cbor.Text("signature"), Val: cbor.Text(proof.Signature)},
+	})
+}
+
 // caller makes one call; a pool's Call.
 type caller func(ctx context.Context, c pool.Call) (cbor.Value, error)
 
@@ -183,12 +193,7 @@ func requestMembership(ctx context.Context, call caller, key *identity.NodeKey, 
 	}
 	payload := cbor.Map([]cbor.MapEntry{
 		{Key: cbor.Text("public_key"), Val: carried},
-		{Key: cbor.Text("proof"), Val: cbor.Map([]cbor.MapEntry{
-			{Key: cbor.Text("v"), Val: cbor.Uint64(uint64(proof.V))},
-			{Key: cbor.Text("timestamp"), Val: cbor.Uint64(proof.Timestamp)},
-			{Key: cbor.Text("nonce"), Val: cbor.Text(proof.Nonce)},
-			{Key: cbor.Text("signature"), Val: cbor.Text(proof.Signature)},
-		})},
+		{Key: cbor.Text("proof"), Val: proofValue(proof)},
 	})
 	result, err := call(ctx, pool.Call{Realm: realm, Procedure: realmName + "/_realm/_realm/identity/issue_membership_ucan_v1",
 		Payload: payload, Timeout: timeout})

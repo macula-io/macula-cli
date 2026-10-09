@@ -23,21 +23,6 @@ const memberCan = "member/email-verified"
 
 // aPerson is a person key and its membership in tm's realm, minted by the
 // realm key as the realm mints one at a join, kept where person join keeps it.
-func aPerson(t *testing.T, tm *testMesh, exp time.Time) (*identity.NodeKey, string) {
-	t.Helper()
-	person := freshKey(t)
-	id, _ := person.NodeID()
-	membership, err := ucan.Create(tm.realm.Key, id, []ucan.Capability{{With: "mri:realm:" + tm.realm.Name, Can: memberCan}},
-		ucan.Options{Exp: exp.Unix()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	file := filepath.Join(t.TempDir(), "person", tm.realm.Name+".ucan")
-	if err := writePrivate(file, append(membership, '\n')); err != nil {
-		t.Fatal(err)
-	}
-	return person, file
-}
 
 // servingGated serves org/<name> on station 0 under realm_member_required for
 // tm's realm key, counting the calls that reach its handler.
@@ -67,35 +52,26 @@ func servingGated(t *testing.T, tm *testMesh, name string, entered *atomic.Int64
 	return procedure
 }
 
-func chainOf(t *testing.T, chain []byte) presented {
+// aClientMembership is a membership for node, minted by tm's realm key as the
+// realm mints one for a client a person bound (macula-realm#46 step 2).
+func aClientMembership(t *testing.T, tm *testMesh, node [32]byte, exp time.Time) presented {
 	t.Helper()
-	file := filepath.Join(t.TempDir(), "chain")
-	if err := writePrivate(file, chain); err != nil {
-		t.Fatal(err)
-	}
-	token, proofs, err := readChain(file)
+	token, err := ucan.Create(tm.realm.Key, node, []ucan.Capability{{With: "mri:realm:" + tm.realm.Name, Can: memberCan}},
+		ucan.Options{Exp: exp.Unix()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	return presented{token: token, proofs: proofs}
+	return presented{token: token}
 }
 
-func TestAPersonsNoteLetsEachOfTheirClientsCallAMemberGatedProcedure(t *testing.T) {
+func TestEachBoundClientCallsAMemberGatedProcedureWithItsOwnMembership(t *testing.T) {
 	tm := newTestMesh(t)
 	var entered atomic.Int64
 	procedure := servingGated(t, tm, "members_only", &entered)
-	person, membership := aPerson(t, tm, time.Now().Add(4*time.Hour))
 	for i := range 2 {
 		client, m := tm.node(t, 1, true, false)
-		chain, note, err := delegate(person, membership, tm.realm.RealmKey(), client.NodeID(), time.Hour, time.Now())
-		if err != nil {
-			t.Fatal(err)
-		}
-		clientID := client.NodeID()
-		if note.Client != hexOf(clientID[:]) {
-			t.Fatalf("client %d: the note is for %s", i, note.Client)
-		}
-		got, err := call(context.Background(), client, tm.realm.ID, procedure, cbor.Null(), [32]byte{}, m, chainOf(t, chain))
+		got, err := call(context.Background(), client, tm.realm.ID, procedure, cbor.Null(), [32]byte{}, m,
+			aClientMembership(t, tm, client.NodeID(), time.Now().Add(time.Hour)))
 		if err != nil {
 			t.Fatalf("client %d: %v", i, err)
 		}
@@ -108,7 +84,7 @@ func TestAPersonsNoteLetsEachOfTheirClientsCallAMemberGatedProcedure(t *testing.
 	}
 }
 
-func TestNoNoteAndAnotherPersonsNoteAreRefusedBeforeTheHandler(t *testing.T) {
+func TestNoMembershipAndAnotherNodesAreRefusedBeforeTheHandler(t *testing.T) {
 	tm := newTestMesh(t)
 	var entered atomic.Int64
 	procedure := servingGated(t, tm, "members_only", &entered)
@@ -116,19 +92,14 @@ func TestNoNoteAndAnotherPersonsNoteAreRefusedBeforeTheHandler(t *testing.T) {
 
 	_, err := call(context.Background(), client, tm.realm.ID, procedure, cbor.Null(), [32]byte{}, m, presented{})
 	if code := providerCode(err); code != "unauthorized" {
-		t.Fatalf("no note: %v", err)
+		t.Fatalf("no membership: %v", err)
 	}
-	// Another person's note, for another client, presented by this one.
-	other, otherMembership := aPerson(t, tm, time.Now().Add(4*time.Hour))
-	elsewhere := freshKey(t)
-	elsewhereID, _ := elsewhere.NodeID()
-	chain, _, err := delegate(other, otherMembership, tm.realm.RealmKey(), elsewhereID, time.Hour, time.Now())
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = call(context.Background(), client, tm.realm.ID, procedure, cbor.Null(), [32]byte{}, m, chainOf(t, chain))
+	// Another node's membership, presented by this one.
+	elsewhere, _ := freshKey(t).NodeID()
+	_, err = call(context.Background(), client, tm.realm.ID, procedure, cbor.Null(), [32]byte{}, m,
+		aClientMembership(t, tm, elsewhere, time.Now().Add(time.Hour)))
 	if code := providerCode(err); code != "unauthorized" {
-		t.Fatalf("another person's note: %v", err)
+		t.Fatalf("another node's membership: %v", err)
 	}
 	if n := entered.Load(); n != 0 {
 		t.Fatalf("the handler ran %d times for refused calls", n)
@@ -141,66 +112,6 @@ func providerCode(err error) string {
 		return pe.Code
 	}
 	return ""
-}
-
-func TestANoteNeverOutlivesTheMembershipItComesFrom(t *testing.T) {
-	tm := newTestMesh(t)
-	now := time.Now()
-	membershipExp := now.Add(30 * time.Minute)
-	person, membership := aPerson(t, tm, membershipExp)
-	client := freshKey(t)
-	id, _ := client.NodeID()
-	chain, note, err := delegate(person, membership, tm.realm.RealmKey(), id, 24*time.Hour, now)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if note.Expires != time.Unix(membershipExp.Unix(), 0).UTC().Format(time.RFC3339) {
-		t.Fatalf("the note expires %s, the membership %s", note.Expires, membershipExp.UTC())
-	}
-	c, err := readClaims([]byte(strings.SplitN(string(chain), "\n", 2)[0]))
-	if err != nil || c.Exp != membershipExp.Unix() {
-		t.Fatalf("the note's exp %d, want %d (%v)", c.Exp, membershipExp.Unix(), err)
-	}
-}
-
-func TestADelegationIsRefusedUnlessTheMembershipHoldsForThisPerson(t *testing.T) {
-	tm := newTestMesh(t)
-	now := time.Now()
-	client := freshKey(t)
-	clientID, _ := client.NodeID()
-
-	// Another person's membership in this person's file.
-	person := freshKey(t)
-	_, othersMembership := aPerson(t, tm, now.Add(time.Hour))
-	if _, _, err := delegate(person, othersMembership, tm.realm.RealmKey(), clientID, time.Hour, now); ucan.RefusalName(err) != "not_the_audience" {
-		t.Fatalf("someone else's membership: %v", err)
-	}
-	// A membership the realm key did not sign.
-	member, membership := aPerson(t, tm, now.Add(time.Hour))
-	if _, _, err := delegate(member, membership, freshKey(t).PublicKey(), clientID, time.Hour, now); ucan.RefusalName(err) != "not_the_issuer" {
-		t.Fatalf("a membership another key issued: %v", err)
-	}
-	// An expired membership.
-	if _, _, err := delegate(member, membership, tm.realm.RealmKey(), clientID, time.Hour, now.Add(2*time.Hour)); ucan.RefusalName(err) != "expired" {
-		t.Fatalf("an expired membership: %v", err)
-	}
-	// No membership kept.
-	if _, _, err := delegate(member, filepath.Join(t.TempDir(), "none.ucan"), tm.realm.RealmKey(), clientID, time.Hour, now); err == nil ||
-		!strings.Contains(err.Error(), "person join") {
-		t.Fatalf("no membership: %v", err)
-	}
-}
-
-func TestPersonDelegateRefusesALongNoteBeforeTouchingAKey(t *testing.T) {
-	code, out, _ := runCaptured(t, "person", "delegate", "-json", "-realm", "io.macula", "-realm-key", "ab",
-		"-to", strings.Repeat("ab", 32), "-ttl", "200h")
-	if code != 2 || !strings.Contains(out, "168h") {
-		t.Fatalf("code %d: %s", code, out)
-	}
-	path, _ := filepath.Abs(filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "macula-cli", "person.key"))
-	if _, err := os.Stat(path); err == nil {
-		t.Fatal("a person key was created for a refused invocation")
-	}
 }
 
 func TestAMembershipIsKeptPerPersonAndWrittenOwnerOnly(t *testing.T) {
@@ -244,7 +155,7 @@ func TestAChainFileIsTheTokenThenItsProofs(t *testing.T) {
 	}
 }
 
-func TestServeRequireMemberServesANoteAndRefusesNone(t *testing.T) {
+func TestServeRequireMemberServesAMemberAndRefusesNone(t *testing.T) {
 	tm := newTestMesh(t)
 	policy, err := memberPolicy(memberCan, hex.EncodeToString(tm.realm.RealmKey()), "pq_pure")
 	if err != nil {
@@ -255,16 +166,12 @@ func TestServeRequireMemberServesANoteAndRefusesNone(t *testing.T) {
 		func(servedCall) { entered.Add(1) })
 	client, m := tm.node(t, 1, true, false)
 	if _, err := call(context.Background(), client, tm.realm.ID, procedure, cbor.Null(), [32]byte{}, m, presented{}); providerCode(err) != "unauthorized" {
-		t.Fatalf("no note: %v", err)
+		t.Fatalf("no membership: %v", err)
 	}
-	person, membership := aPerson(t, tm, time.Now().Add(4*time.Hour))
-	chain, _, err := delegate(person, membership, tm.realm.RealmKey(), client.NodeID(), time.Hour, time.Now())
-	if err != nil {
-		t.Fatal(err)
-	}
-	got, err := call(context.Background(), client, tm.realm.ID, procedure, cbor.Null(), [32]byte{}, m, chainOf(t, chain))
+	got, err := call(context.Background(), client, tm.realm.ID, procedure, cbor.Null(), [32]byte{}, m,
+		aClientMembership(t, tm, client.NodeID(), time.Now().Add(time.Hour)))
 	if err != nil || string(got.Result) != `"served"` {
-		t.Fatalf("with a note: %v, %v", got.Result, err)
+		t.Fatalf("with a membership: %v, %v", got.Result, err)
 	}
 	if n := entered.Load(); n != 1 {
 		t.Fatalf("the handler ran %d times, want 1", n)

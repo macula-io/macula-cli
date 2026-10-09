@@ -86,7 +86,7 @@ a few seconds). `-ephemeral` uses a key made for the run and never saved;
 | Command | What it does |
 |---------|--------------|
 | `connect` | Resolve the seed, then link to its station over the post-quantum handshake (v5; v4 to a station not yet on v5), refusing a station that does not prove the pinned node_id |
-| `call <procedure>` | Call a procedure by direct dial: to any trusted provider, or `-provider <node_id>`. Sealed end to end when the provider advertises a KEM key; the seal report (`sealed`, `provider`, `seal_key_id`) says which. `-ucan-file` presents a UCAN chain (a note from `person delegate`) to a gated procedure |
+| `call <procedure>` | Call a procedure by direct dial: to any trusted provider, or `-provider <node_id>`. Sealed end to end when the provider advertises a KEM key; the seal report (`sealed`, `provider`, `seal_key_id`) says which. `-ucan-file` presents a UCAN (a membership, or a chain: the token, then its proofs) to a gated procedure |
 | `serve <procedure>` | Serve a procedure, echoing each payload or answering `-reply`, until stopped (`-once`, `-for`). `-confidential preferred` (default) advertises a KEM key and answers sealed calls sealed, `required` also refuses clear calls, `off` serves in the clear; each call reports `sealed`. `-require-member <can>` serves only realm members: a caller whose UCAN chain, rooted at `-realm-key`, grants that can (an `<org>/<name>` procedure only) |
 | `pubsub publish <topic>` | Publish one payload |
 | `pubsub watch <topic>` | Print each verified event (`-count`, `-for`) |
@@ -101,38 +101,40 @@ a few seconds). `-ephemeral` uses a key made for the run and never saved;
 | `realm join` | Ask a realm to admit this device: a human admits it at the printed join URL (`-wait` polls) |
 | `realm status <session>` | A join session's state, and what the realm granted once confirmed |
 | `realm membership` | This node's membership UCAN, over the mesh; the node must be admitted |
-| `person init` | Your person key (`person.key`, beside the node key): it signs your clients' notes and never connects |
+| `person init` | Your person key (`person.key`, beside the node key): it signs your requests to bind your clients and never connects |
 | `person join` | Join a realm once, as yourself: confirm at the join URL signed in as you; keeps the membership the realm issues to your person key, asking it to last `-membership-ttl` (default 720h, the realm's 30-day cap) |
-| `person delegate -to <node_id>` | A note letting one of your clients act as your membership, for `-ttl` (default 24h, at most 168h, never past the membership), as a chain file (`-out`) |
+| `person bind -to <node_id>` | The realm admits that node as your client, on its own membership sponsored by you: it renews its own token at your tier and ends with your membership |
+| `person unbind -to <node_id>` | The realm ends that client's membership; you can bind it again later |
 
 ### One person, many clients
 
 A realm-gated procedure (`realm_member_required`) serves a caller whose UCAN
-chain is rooted at the realm's key. With a person key you join once and hand
-each of your clients a short note instead of joining every device:
+is rooted at the realm's key. With a person key you join once, verified by
+email, and bind each of your clients once instead of joining every device:
 
 ```bash
 macula-cli person init                                  # once: prints your person id
-macula-cli person join -realm io.macula                 # once: confirm at the join URL (lasts up to 30 days)
+macula-cli person join -realm io.macula                 # once: confirm at the join URL, signed in by email
 macula-cli identity                                     # this client's node_id
-macula-cli person delegate -realm io.macula -realm-key @io_macula.key \
-  -to <client node_id> -ttl 24h -out note.ucan
-macula-cli call -seed ... -realm io.macula -realm-key @io_macula.key \
-  -ucan-file note.ucan <org>/<procedure>
+macula-cli person bind -seed ... -realm io.macula -realm-key @io_macula.key -to <client node_id>
+macula-cli realm membership -seed ... -realm io.macula -realm-key @io_macula.key   # on the client: its own token
 ```
+
+The client asks for its own membership token (`realm membership`; macula-mcp
+renews its own) and presents it to a gated procedure with `call -ucan-file`.
 
 `person join` asks for a membership of `-membership-ttl` (default 720h); the
 realm clamps it to its cap, the join page shows the lifetime before you
 confirm, and a realm older than this ignores the ask and keeps its own default
 (4 hours). The printed expiry is what was minted.
 
-`person delegate` refuses a membership that is not yours, not signed by that
-realm key or already expired, and checks the note as a gate would before it
-writes it. A note is revoked only by its expiry, so keep `-ttl` short. The same
-chain file is what macula-mcp's `MACULA_MCP_UCAN` reads, with `mesh_call`
-`ucan: 1`. A service that reads who called from the token sees your person
-key as the note's issuer and the client as its audience; the realm's own
-facts stay in the membership behind it.
+`person bind` signs the request with your person key; the connection can be
+any node's. The realm admits the client on its own membership with you as its
+sponsor (at most 16 clients per person, one person per node), so the client
+renews its own token at your tier for as long as you are a member. Revoking or
+resigning your membership ends every client you bound, at its next renewal;
+`person unbind` ends one. A node the realm revoked, or whose dated membership
+ended, cannot be bound back in. Every refusal says what to do next.
 
 A procedure `'~/<name>'` is `<name>` in the node's own namespace, which needs no
 org and no realm key: `serve '~/echo'` on one node and `call '~<its node_id>/echo'`

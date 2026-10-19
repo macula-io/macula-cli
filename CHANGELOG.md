@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-10-19
+
 ### Changed
 
 - macula-cli runs on macula-go v0.27.0, the wire 1.0 release: the handshake is version 5 alone, with the versions and

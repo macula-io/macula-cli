@@ -45,7 +45,7 @@ jobs:
         with:
           go-version-file: go.mod
       # Every command's core runs against macula-go's in-process teststation
-      # (two macula 12 stations sharing a DHT, and a test realm), and realm
+      # (two wire 1.0 stations sharing a DHT, and a test realm), and realm
       # join against an HTTP realm that verifies the proof: no network needed.
       # The live fleet check is scripts/live_check.sh, run by hand, never here.
       - run: go test ./...

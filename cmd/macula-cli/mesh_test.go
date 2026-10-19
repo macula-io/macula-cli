@@ -31,7 +31,7 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-// testMesh is two in-process macula 12 stations sharing a DHT, and a test
+// testMesh is two in-process wire 1.0 stations sharing a DHT, and a test
 // realm with one org.
 type testMesh struct {
 	stations []*teststation.Station

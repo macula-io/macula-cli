@@ -15,7 +15,8 @@ import (
 	"github.com/macula-io/macula-cli/internal/wirevalue"
 )
 
-// recordTypes are macula 12's record types by the names the CLI takes.
+// recordTypes are the record types the CLI takes by name, at their wire 1.0
+// numbers.
 var recordTypes = map[string]record.Type{
 	"node_record":             0x01,
 	"procedure_advertisement": 0x06,

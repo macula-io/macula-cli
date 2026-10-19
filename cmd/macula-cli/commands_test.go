@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -445,5 +446,29 @@ func TestAListenerSubscribedOnTwoLinksHearsOneEventPerPublication(t *testing.T) 
 	}
 	if n := <-done; n != 1 {
 		t.Fatalf("heard %d events in the window, want exactly 1", n)
+	}
+}
+
+// A station that refuses a registration answers it, and from wire 1.0 that
+// verdict is the command's failure: serve must report the station's own
+// reason as a refusal, not as an unexplained failure.
+func TestAServesRefusalIsReportedAsTheStationsReason(t *testing.T) {
+	tm := newTestMesh(t)
+	s := tm.stations[0]
+	s.Judge(func(kind string) (string, bool) {
+		if kind == "advertise" {
+			return "advertiser_quota", false
+		}
+		return "", false
+	})
+	seed := fmt.Sprintf("%s:%d@%x", s.Host, s.Port, s.NodeID)
+	realm := fmt.Sprintf("%x", tm.realm.ID)
+	code, out, _ := runCaptured(t, "serve", "-json", "-seed", seed, "-realm", realm, "-profile", "pq_pure", "-ephemeral", "-for", "20s", "~/refused_probe")
+	if code != 1 {
+		t.Fatalf("serve exited %d, want 1: %s", code, out)
+	}
+	env := envelope(t, out)
+	if env.Error == nil || env.Error.Kind != "refused" || env.Error.Code != "advertiser_quota" {
+		t.Fatalf("serve reported %+v, want kind refused with the station's reason", env.Error)
 	}
 }

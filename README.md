@@ -86,7 +86,7 @@ a few seconds). `-ephemeral` uses a key made for the run and never saved;
 
 | Command | What it does |
 |---------|--------------|
-| `connect` | Resolve the seed, then link to its station over the post-quantum handshake (v5; v4 to a station not yet on v5), refusing a station that does not prove the pinned node_id |
+| `connect` | Resolve the seed, then link to its station over the wire 1.0 post-quantum handshake (version 5, versions and profiles negotiated, a downgrade refused), refusing a station that does not prove the pinned node_id |
 | `call <procedure>` | Call a procedure by direct dial: to any trusted provider, or `-provider <node_id>`. Sealed end to end when the provider advertises a KEM key; the seal report (`sealed`, `provider`, `seal_key_id`) says which. `-ucan-file` presents a UCAN (a membership, or a chain: the token, then its proofs) to a gated procedure |
 | `serve <procedure>` | Serve a procedure, echoing each payload or answering `-reply`, until stopped (`-once`, `-for`). `-confidential preferred` (default) advertises a KEM key and answers sealed calls sealed, `required` also refuses clear calls, `off` serves in the clear; each call reports `sealed`. `-require-member <can>` serves only realm members: a caller whose UCAN chain, rooted at `-realm-key`, grants that can (an `<org>/<name>` procedure only) |
 | `pubsub publish <topic>` | Publish one payload |

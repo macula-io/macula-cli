@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
-# ONE live check of macula-cli against a macula 12 station, with keys made for
-# the run and never saved (-ephemeral). Defaults: helsinki and the io.macula
-# realm; the realm key is io.macula's PUBLIC half, read from mcl-echo's
-# header. Override any MACULA_CLI_LIVE_* variable to point elsewhere.
+# ONE live check of macula-cli against a live station, with keys made for
+# the run and never saved (-ephemeral). This binary speaks wire 1.0 only, so
+# run it once the fleet has switched (flag day, 20 Oct 2026). Defaults:
+# helsinki and the io.macula realm; the realm key is io.macula's PUBLIC half,
+# read from mcl-echo's header. Override any MACULA_CLI_LIVE_* variable to
+# point elsewhere.
 #
 # Checks: connect (resolve, pinned link), node records in the DHT, mcl-echo/echo
 # by direct dial, and a watch hearing one publication on a random topic. It

@@ -29,10 +29,12 @@ type Envelope struct {
 // detail when the wire carried one, and the message for people.
 //
 // Kinds: provider_error, relay_error, stream_error, identity_mismatch (a
-// station that does not prove the pinned node_id), realm_refusal (code: the
-// realm's error, detail: the HTTP status), timeout, no_provider,
-// no_realm_key, not_found, not_shared, content_unavailable,
-// invalid_argument, failed.
+// station that does not prove the pinned node_id), refused (a station refused
+// the registration: code is its reason), unacknowledged (a station did not
+// answer one), realm_refusal (code: the realm's error, detail: the HTTP
+// status), timeout, no_link, no_provider, no_station_endpoint (code: why the
+// station's endpoint record is unusable), no_realm_key, not_found, not_shared,
+// content_unavailable, invalid_argument, failed.
 type Error struct {
 	Kind    string `json:"kind"`
 	Code    string `json:"code,omitempty"`
@@ -92,6 +94,9 @@ func classify(err error) Error {
 	var provider *stationlink.ProviderError
 	var relay *stationlink.RelayError
 	var stream *stationlink.StreamError
+	var refusedRegistration *stationlink.RefusedError
+	var unacknowledged *stationlink.UnacknowledgedError
+	var endpoint *pool.StationEndpointError
 	var refused refusal
 	switch {
 	case errors.As(err, &provider):
@@ -105,13 +110,24 @@ func classify(err error) Error {
 		e.Kind, e.Code, e.Detail, e.Relay = "stream_error", stream.Code, stream.Message, stream.Relay
 	case errors.Is(err, handshake.ErrPeerIdentityMismatch):
 		e.Kind = "identity_mismatch"
+	case errors.As(err, &refusedRegistration):
+		e.Kind, e.Code = "refused", refusedRegistration.Reason
+		e.Detail = fmt.Sprintf("%s of %q at station %x", refusedRegistration.Kind,
+			refusedRegistration.Name, refusedRegistration.Station)
+	case errors.As(err, &unacknowledged):
+		e.Kind = "unacknowledged"
+		e.Detail = fmt.Sprintf("%s of %q at station %x", unacknowledged.Kind, unacknowledged.Name, unacknowledged.Station)
 	case errors.As(err, &refused):
 		code, status := refused.Refusal()
 		e.Kind, e.Code, e.Detail = "realm_refusal", code, fmt.Sprintf("HTTP %d", status)
 	case errors.Is(err, stationlink.ErrCallTimeout), errors.Is(err, context.DeadlineExceeded):
 		e.Kind = "timeout"
+	case errors.Is(err, pool.ErrNoLink):
+		e.Kind = "no_link"
 	case errors.Is(err, pool.ErrNoProvider):
 		e.Kind = "no_provider"
+	case errors.As(err, &endpoint):
+		e.Kind, e.Code, e.Detail = "no_station_endpoint", endpoint.Reason, fmt.Sprintf("station %x", endpoint.Station)
 	case errors.Is(err, pool.ErrNoRealmKey):
 		e.Kind = "no_realm_key"
 	case errors.Is(err, stationlink.ErrRecordNotFound):

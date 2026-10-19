@@ -45,8 +45,9 @@ macula-cli connect -seed 'station-fi-helsinki.macula.io:4433@004d1f47...'
 # linked as node 00a1... to station 004d1f47... in 480 ms (up: true)
 ```
 
-Resolves the seed's host, then links over the macula 12 handshake (QUIC with
-key exchange on SecP384r1MLKEM1024 alone, then the v4 handshake). A station that does not
+Resolves the seed's host, then links over the wire 1.0 handshake (QUIC with
+key exchange on SecP384r1MLKEM1024 alone, then handshake version 5, the versions and profiles
+both ends speak negotiated and a downgrade refused). A station that does not
 prove the pinned node_id is refused.
 
 ## 3. `call`

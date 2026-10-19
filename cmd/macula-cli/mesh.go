@@ -44,7 +44,7 @@ func (s *seedList) Set(v string) error {
 func parseSeed(v string) (pool.Seed, error) {
 	at := strings.LastIndex(v, "@")
 	if at < 0 {
-		return pool.Seed{}, fmt.Errorf("-seed %q: want host[:port]@<station node_id hex>; macula 12 pins every seed", v)
+		return pool.Seed{}, fmt.Errorf("-seed %q: want host[:port]@<station node_id hex>; every seed is pinned to its station", v)
 	}
 	id, err := hex32(v[at+1:])
 	if err != nil {

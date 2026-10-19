@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- macula-cli runs on macula-go v0.27.0, the wire 1.0 release: the handshake is version 5 alone, with the versions and
+  profiles both ends speak negotiated and a downgrade refused, and records and the `_dht.*` arguments and replies are
+  wire 1.0's. A station that is not on wire 1.0 can no longer be reached, so this binary is released once the fleet has
+  switched.
+- `serve` and `pubsub watch` wait for the station's REGISTER_ACK and fail when it refuses or does not answer, as macula
+  15 does: a refusal is `kind: refused` with the station's reason in `code`, no answer `kind: unacknowledged`, and
+  both name the registration and the station in `detail`.
+- `pubsub watch` with no station link up fails as `kind: no_link`, and a station that cannot be dialed for want of a
+  usable endpoint record is `kind: no_station_endpoint` with the reason (`absent`, `expired`, `unverifiable`, ...) in
+  `code`, rather than either reading as an unexplained failure.
+
+### Added
+
+- `scripts/w1_check.sh`: one read-only check against a wire 1.0 station, a pinned link and node and station endpoint
+  records read from the DHT, publishing nothing. The seed comes from `MACULA_CLI_W1_SEED`, so no station of ours is
+  named in this repository.
+
 ## [0.15.0] - 2026-10-09
 
 ### Added

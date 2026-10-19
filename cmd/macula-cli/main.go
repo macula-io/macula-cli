@@ -1,4 +1,4 @@
-// Command macula-cli is a scriptable client of the macula 13 mesh, built on
+// Command macula-cli is a scriptable client of the wire 1.0 mesh, built on
 // macula-go: link to stations, call and serve procedures, publish and watch,
 // read the DHT, share and fetch content, and join a realm. Every command
 // takes -json for a structured envelope, whose failures carry a fixed kind.
@@ -61,7 +61,7 @@ func run(args []string) int {
 }
 
 func usage() {
-	fmt.Fprint(os.Stderr, `macula-cli: a scriptable client of the macula 13 mesh
+	fmt.Fprint(os.Stderr, `macula-cli: a scriptable client of the wire 1.0 mesh
 
 Every station is pinned: -seed host[:port]@<station node_id hex>.
 A realm is -realm <name or 64-hex id>, trusted with -realm-key <hex|@file>.

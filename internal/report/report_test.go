@@ -39,6 +39,12 @@ func TestFailuresAreClassifiedByTheirTypeNotTheirText(t *testing.T) {
 		{fmt.Errorf("x: %w", pool.ErrNoLink), Error{Kind: "no_link"}},
 		{testRefusal{}, Error{Kind: "realm_refusal", Code: "bad_proof", Detail: "HTTP 401"}},
 		{errors.Join(context.DeadlineExceeded, fmt.Errorf("dial: %w", handshake.ErrPeerIdentityMismatch)), Error{Kind: "identity_mismatch"}},
+		// A dial that ran out of time is a timeout, and stays one when the
+		// pool also reports no link, and when the station it did reach did
+		// not prove the node_id.
+		{errors.Join(pool.ErrNoLink, context.DeadlineExceeded), Error{Kind: "timeout"}},
+		{errors.Join(pool.ErrNoLink, context.DeadlineExceeded, fmt.Errorf("dial: %w", handshake.ErrPeerIdentityMismatch)),
+			Error{Kind: "identity_mismatch"}},
 		{errors.New("anything else"), Error{Kind: "failed"}},
 	}
 	for _, c := range cases {

@@ -130,26 +130,11 @@ func runServe(args []string) int {
 	if code, ok := parse(fs, args, &m.jsonOut, exactly(1)); !ok {
 		return code
 	}
-	var o serveOptions
-	o.once = *once
-	confidential, err := confidentialFlag(*confidentialText)
-	if err != nil {
-		return report.Usage(m.jsonOut, err)
+	o, code, ok := readServeOptions(fs, &m, *once, *confidentialText, *requireMember)
+	if !ok {
+		return code
 	}
-	o.confidential = confidential
-	// Presence, not value: -require-member "" (an unset variable in a script)
-	// must be refused, never serve the procedure open.
-	gated := false
-	fs.Visit(func(f *flag.Flag) { gated = gated || f.Name == "require-member" })
-	if gated {
-		if strings.HasPrefix(fs.Arg(0), "~") {
-			return report.Usage(m.jsonOut, errors.New("-require-member gates an <org>/<name> procedure; a node's own namespace cannot be gated"))
-		}
-		if o.policy, err = memberPolicy(*requireMember, m.realmKey, m.profile); err != nil {
-			return report.Usage(m.jsonOut, err)
-		}
-	}
-	m.kemAdvertise = confidential != stationlink.ConfidentialOff
+	m.kemAdvertise = o.confidential != stationlink.ConfidentialOff
 	if *replyText != "" {
 		v, err := wirevalue.FromJSON([]byte(*replyText))
 		if err != nil {
@@ -173,6 +158,40 @@ func runServe(args []string) int {
 		return report.Fail(m.jsonOut, err)
 	}
 	defer p.Close()
+	return serveAndReport(ctx, m, p, realm, fs.Arg(0), o)
+}
+
+// readServeOptions turns the three flags that carry rules into serveOptions.
+// It returns the exit code to use when a flag is refused, and false then.
+func readServeOptions(fs *flag.FlagSet, m *meshFlags, once bool,
+	confidentialText, requireMember string) (serveOptions, int, bool) {
+	var o serveOptions
+	o.once = once
+	confidential, err := confidentialFlag(confidentialText)
+	if err != nil {
+		return o, report.Usage(m.jsonOut, err), false
+	}
+	o.confidential = confidential
+	// Presence, not value: -require-member "" (an unset variable in a script)
+	// must be refused, never serve the procedure open.
+	gated := false
+	fs.Visit(func(f *flag.Flag) { gated = gated || f.Name == "require-member" })
+	if !gated {
+		return o, 0, true
+	}
+	if strings.HasPrefix(fs.Arg(0), "~") {
+		return o, report.Usage(m.jsonOut,
+			errors.New("-require-member gates an <org>/<name> procedure; a node's own namespace cannot be gated")), false
+	}
+	if o.policy, err = memberPolicy(requireMember, m.realmKey, m.profile); err != nil {
+		return o, report.Usage(m.jsonOut, err), false
+	}
+	return o, 0, true
+}
+
+// serveAndReport serves until the context ends and reports the calls answered.
+func serveAndReport(ctx context.Context, m meshFlags, p *pool.Pool, realm [32]byte,
+	procedureArg string, o serveOptions) int {
 	var (
 		mu    sync.Mutex
 		calls = []servedCall{}
@@ -180,7 +199,7 @@ func runServe(args []string) int {
 	if !m.jsonOut {
 		fmt.Fprintf(os.Stderr, "serving as node %x; interrupt to stop\n", p.NodeID())
 	}
-	procedure, withdrawErr, err := serve(ctx, p, realm, fs.Arg(0), o, func(c servedCall) {
+	procedure, withdrawErr, err := serve(ctx, p, realm, procedureArg, o, func(c servedCall) {
 		mu.Lock()
 		defer mu.Unlock()
 		calls = append(calls, c)

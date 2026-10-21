@@ -218,34 +218,47 @@ func runPersonJoin(args []string) int {
 	if !f.jsonOut {
 		fmt.Fprintf(os.Stderr, "confirm at %s, signed in as yourself; waiting\n", session.JoinURL)
 	}
-	status, err := waitAdmitted(ctx, client, *realmURL, session.SessionID, *wait, 2*time.Second)
+	file, expires, err := awaitMembership(ctx, client, *realmURL, session, id, *wait, path, name)
 	if err != nil {
-		return report.Fail(f.jsonOut, err)
-	}
-	if status.Status != "confirmed" {
-		return report.Fail(f.jsonOut, fmt.Errorf("the join session is %s, not confirmed: no membership", status.Status))
-	}
-	if status.UCAN == nil || *status.UCAN == "" {
-		return report.Fail(f.jsonOut, errors.New("the realm confirmed the join but issued no membership UCAN"))
-	}
-	token := []byte(*status.UCAN)
-	c, err := readClaims(token)
-	if err != nil {
-		return report.Fail(f.jsonOut, fmt.Errorf("the realm's membership: %w", err))
-	}
-	if c.Aud != fmt.Sprintf("%x", id) {
-		return report.Fail(f.jsonOut, fmt.Errorf("the realm's membership is for %s, not this person %x: not kept", c.Aud, id))
-	}
-	file := membershipPath(path, id, name)
-	if err := writePrivate(file, append(token, '\n')); err != nil {
 		return report.Fail(f.jsonOut, err)
 	}
 	r := personResult{PersonID: fmt.Sprintf("%x", id), KeyFile: path, Profile: string(key.Profile()), Membership: file,
-		Expires: time.Unix(c.Exp, 0).UTC().Format(time.RFC3339)}
+		Expires: expires.Format(time.RFC3339)}
 	report.Ok(f.jsonOut, r, func(w io.Writer) {
 		fmt.Fprintf(w, "person %s is a member of %s until %s\nmembership %s\n", r.PersonID, name, r.Expires, r.Membership)
 	})
 	return 0
+}
+
+// awaitMembership waits for the person to confirm at the join URL and keeps the
+// membership UCAN the realm issues, but only once it is confirmed, is for this
+// person, and names an expiry. It returns the file it was written to.
+func awaitMembership(ctx context.Context, client *http.Client, realmURL string, session joinSession,
+	id [32]byte, wait time.Duration, keyPath, realmName string) (string, time.Time, error) {
+	var none time.Time
+	status, err := waitAdmitted(ctx, client, realmURL, session.SessionID, wait, 2*time.Second)
+	if err != nil {
+		return "", none, err
+	}
+	if status.Status != "confirmed" {
+		return "", none, fmt.Errorf("the join session is %s, not confirmed: no membership", status.Status)
+	}
+	if status.UCAN == nil || *status.UCAN == "" {
+		return "", none, errors.New("the realm confirmed the join but issued no membership UCAN")
+	}
+	token := []byte(*status.UCAN)
+	c, err := readClaims(token)
+	if err != nil {
+		return "", none, fmt.Errorf("the realm's membership: %w", err)
+	}
+	if c.Aud != fmt.Sprintf("%x", id) {
+		return "", none, fmt.Errorf("the realm's membership is for %s, not this person %x: not kept", c.Aud, id)
+	}
+	file := membershipPath(keyPath, id, realmName)
+	if err := writePrivate(file, append(token, '\n')); err != nil {
+		return "", none, err
+	}
+	return file, time.Unix(c.Exp, 0).UTC(), nil
 }
 
 // bindClient and unbindClient are the two binding procedures: the name the

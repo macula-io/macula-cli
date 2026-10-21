@@ -94,7 +94,7 @@ func runDht(args []string) int {
 			map[bool]string{true: "type", false: "key hex"}[sub == "find-records-by-type"])
 		fs.PrintDefaults()
 	}
-	if sub != "find-record" && sub != "find-records" && sub != "find-records-by-type" {
+	if !knownDhtSub(sub) {
 		return unknownSubcommand("dht", args, "find-record, find-records, find-records-by-type")
 	}
 	if code, ok := parse(fs, args[1:], &m.jsonOut, exactly(1)); !ok {
@@ -102,16 +102,8 @@ func runDht(args []string) int {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), m.timeout)
 	defer cancel()
-	var (
-		key [32]byte
-		t   record.Type
-		err error
-	)
-	if sub == "find-records-by-type" {
-		t, err = recordType(fs.Arg(0))
-	} else {
-		key, err = hex32(fs.Arg(0))
-	}
+
+	query, err := readDhtQuery(fs.Arg(0), sub)
 	if err != nil {
 		return report.Usage(m.jsonOut, err)
 	}
@@ -120,30 +112,56 @@ func runDht(args []string) int {
 		return report.Fail(m.jsonOut, err)
 	}
 	defer p.Close()
-	var result foundRecords
+
+	result, err := runDhtQuery(ctx, p, sub, query)
+	if err != nil {
+		return report.Fail(m.jsonOut, err)
+	}
+	report.Ok(m.jsonOut, result, func(w io.Writer) { writeDhtReport(w, result) })
+	return 0
+}
+
+func knownDhtSub(sub string) bool {
+	return sub == "find-record" || sub == "find-records" || sub == "find-records-by-type"
+}
+
+// dhtQuery is the one argument the subcommand takes: a type name, or a 32 byte
+// key in hex.
+type dhtQuery struct {
+	key [32]byte
+	typ record.Type
+}
+
+func readDhtQuery(arg, sub string) (dhtQuery, error) {
+	if sub == "find-records-by-type" {
+		t, err := recordType(arg)
+		return dhtQuery{typ: t}, err
+	}
+	key, err := hex32(arg)
+	return dhtQuery{key: key}, err
+}
+
+func runDhtQuery(ctx context.Context, p *pool.Pool, sub string, q dhtQuery) (foundRecords, error) {
 	switch sub {
 	case "find-record":
-		v, err := p.FindRecord(ctx, key)
+		v, err := p.FindRecord(ctx, q.key)
 		if err != nil {
-			return report.Fail(m.jsonOut, err)
+			return foundRecords{}, err
 		}
-		result = reportedAll([]record.Verified{v}, 0)
+		return reportedAll([]record.Verified{v}, 0), nil
 	case "find-records":
-		vs, dropped, err := p.FindRecords(ctx, key)
+		vs, dropped, err := p.FindRecords(ctx, q.key)
 		if err != nil {
-			return report.Fail(m.jsonOut, err)
+			return foundRecords{}, err
 		}
-		result = reportedAll(vs, dropped)
-	default:
-		if result, err = findByType(ctx, p, t); err != nil {
-			return report.Fail(m.jsonOut, err)
-		}
+		return reportedAll(vs, dropped), nil
 	}
-	report.Ok(m.jsonOut, result, func(w io.Writer) {
-		for _, r := range result.Records {
-			fmt.Fprintf(w, "type 0x%02x by %s, expires %d: %s\n", r.Type, r.KeyID, r.ExpiresAt, r.Payload)
-		}
-		fmt.Fprintf(w, "%d records, %d dropped as unverifiable\n", len(result.Records), result.Dropped)
-	})
-	return 0
+	return findByType(ctx, p, q.typ)
+}
+
+func writeDhtReport(w io.Writer, result foundRecords) {
+	for _, r := range result.Records {
+		fmt.Fprintf(w, "type 0x%02x by %s, expires %d: %s\n", r.Type, r.KeyID, r.ExpiresAt, r.Payload)
+	}
+	fmt.Fprintf(w, "%d records, %d dropped as unverifiable\n", len(result.Records), result.Dropped)
 }

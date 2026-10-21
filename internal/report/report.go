@@ -91,13 +91,23 @@ type refusal interface {
 
 func classify(err error) Error {
 	e := Error{Kind: "failed", Message: err.Error()}
+	switch {
+	case classifyWire(err, &e):
+	case classifyRealm(err, &e):
+	case classifyLink(err, &e):
+	}
+	return e
+}
+
+// classifyWire fills e for the errors a mesh call returns about what was asked
+// for: a provider, relay or stream complaint, an identity that did not match,
+// or a station that would not register it.
+func classifyWire(err error, e *Error) bool {
 	var provider *stationlink.ProviderError
 	var relay *stationlink.RelayError
 	var stream *stationlink.StreamError
 	var refusedRegistration *stationlink.RefusedError
 	var unacknowledged *stationlink.UnacknowledgedError
-	var endpoint *pool.StationEndpointError
-	var refused refusal
 	switch {
 	case errors.As(err, &provider):
 		e.Kind, e.Code = "provider_error", provider.Code
@@ -117,9 +127,30 @@ func classify(err error) Error {
 	case errors.As(err, &unacknowledged):
 		e.Kind = "unacknowledged"
 		e.Detail = fmt.Sprintf("%s of %q at station %x", unacknowledged.Kind, unacknowledged.Name, unacknowledged.Station)
+	default:
+		return false
+	}
+	return true
+}
+
+// classifyRealm fills e for a realm that refused the caller.
+func classifyRealm(err error, e *Error) bool {
+	var refused refusal
+	switch {
 	case errors.As(err, &refused):
 		code, status := refused.Refusal()
 		e.Kind, e.Code, e.Detail = "realm_refusal", code, fmt.Sprintf("HTTP %d", status)
+	default:
+		return false
+	}
+	return true
+}
+
+// classifyLink fills e for what the pool could not reach: no link, no provider,
+// no realm key, nothing shared, content gone, or a call that ran out of time.
+func classifyLink(err error, e *Error) bool {
+	var endpoint *pool.StationEndpointError
+	switch {
 	case errors.Is(err, stationlink.ErrCallTimeout), errors.Is(err, context.DeadlineExceeded):
 		e.Kind = "timeout"
 	case errors.Is(err, pool.ErrNoLink):
@@ -136,8 +167,10 @@ func classify(err error) Error {
 		e.Kind = "not_shared"
 	case errors.Is(err, pool.ErrContentUnavailable):
 		e.Kind = "content_unavailable"
+	default:
+		return false
 	}
-	return e
+	return true
 }
 
 func emit(env Envelope) {

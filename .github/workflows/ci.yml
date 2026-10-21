@@ -101,3 +101,19 @@ jobs:
             $allErrors | ForEach-Object { Write-Error $_ }
             exit 1
           }
+
+  # THE STRUCTURAL FLOOR (macula-io/macula-codebase-checks#9): deep nesting and
+  # tangled functions fail the build. The caps are spelled out in .golangci.yml,
+  # never taken from a tool default, and there is no baseline.
+  lint:
+    name: structural lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: golangci/golangci-lint-action@v8
+        with:
+          version: v2.15.0
+          args: --timeout 10m

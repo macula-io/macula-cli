@@ -65,38 +65,51 @@ func fromAny(v any) (cbor.Value, error) {
 	case json.Number:
 		return fromNumber(t)
 	case []any:
-		items := make([]cbor.Value, len(t))
-		for i, item := range t {
-			value, err := fromAny(item)
-			if err != nil {
-				return cbor.Value{}, err
-			}
-			items[i] = value
-		}
-		return cbor.List(items), nil
+		return fromList(t)
 	case map[string]any:
-		if raw, only := t[bytesKey]; only && len(t) == 1 {
-			text, ok := raw.(string)
-			if !ok {
-				return cbor.Value{}, errors.New(`"$bytes" holds base64 text`)
-			}
-			b, err := base64.StdEncoding.DecodeString(text)
-			if err != nil {
-				return cbor.Value{}, fmt.Errorf(`"$bytes" is not standard padded base64: %w`, err)
-			}
-			return cbor.Bytes(b), nil
-		}
-		entries := make([]cbor.MapEntry, 0, len(t))
-		for k, item := range t {
-			value, err := fromAny(item)
-			if err != nil {
-				return cbor.Value{}, err
-			}
-			entries = append(entries, cbor.MapEntry{Key: cbor.Text(k), Val: value})
-		}
-		return cbor.Map(entries), nil
+		return fromMap(t)
 	}
 	return cbor.Value{}, fmt.Errorf("a JSON value of type %T", v)
+}
+
+func fromList(items []any) (cbor.Value, error) {
+	values := make([]cbor.Value, len(items))
+	for i, item := range items {
+		value, err := fromAny(item)
+		if err != nil {
+			return cbor.Value{}, err
+		}
+		values[i] = value
+	}
+	return cbor.List(values), nil
+}
+
+func fromMap(m map[string]any) (cbor.Value, error) {
+	if raw, only := m[bytesKey]; only && len(m) == 1 {
+		return fromBytesMarked(raw)
+	}
+	entries := make([]cbor.MapEntry, 0, len(m))
+	for k, item := range m {
+		value, err := fromAny(item)
+		if err != nil {
+			return cbor.Value{}, err
+		}
+		entries = append(entries, cbor.MapEntry{Key: cbor.Text(k), Val: value})
+	}
+	return cbor.Map(entries), nil
+}
+
+// fromBytesMarked reads the one-key form {"$bytes": "<base64>"}.
+func fromBytesMarked(raw any) (cbor.Value, error) {
+	text, ok := raw.(string)
+	if !ok {
+		return cbor.Value{}, errors.New(`"$bytes" holds base64 text`)
+	}
+	b, err := base64.StdEncoding.DecodeString(text)
+	if err != nil {
+		return cbor.Value{}, fmt.Errorf(`"$bytes" is not standard padded base64: %w`, err)
+	}
+	return cbor.Bytes(b), nil
 }
 
 func fromNumber(n json.Number) (cbor.Value, error) {
@@ -127,60 +140,90 @@ func write(buf *bytes.Buffer, v cbor.Value) {
 	case cbor.KindNull:
 		buf.WriteString("null")
 	case cbor.KindUInt, cbor.KindNegInt:
-		if i, ok := v.AsInt64(); ok {
-			buf.WriteString(strconv.FormatInt(i, 10))
-			return
-		}
-		// A uint64 beyond int64, which a payload cannot hold (the decoder
-		// refuses one) but a value built in Go can: its digits.
-		buf.WriteString(v.String())
+		writeInt(buf, v)
 	case cbor.KindFloat:
-		f, _ := v.AsFloat()
-		text := strconv.FormatFloat(f, 'g', -1, 64)
-		if !strings.ContainsAny(text, ".eEn") {
-			text += ".0"
-		}
-		buf.WriteString(text)
+		writeFloat(buf, v)
 	case cbor.KindText:
-		s, _ := v.AsText()
-		quoted, _ := json.Marshal(s)
-		buf.Write(quoted)
+		writeText(buf, v)
 	case cbor.KindBytes:
-		b, _ := v.AsBytes()
-		buf.WriteString(`{"$bytes":"` + base64.StdEncoding.EncodeToString(b) + `"}`)
+		writeBytes(buf, v)
 	case cbor.KindList:
-		items, _ := v.AsList()
-		buf.WriteByte('[')
-		for i, item := range items {
-			if i > 0 {
-				buf.WriteByte(',')
-			}
-			write(buf, item)
-		}
-		buf.WriteByte(']')
+		writeList(buf, v)
 	case cbor.KindMap:
-		entries, _ := v.AsMap()
-		entries = append([]cbor.MapEntry(nil), entries...)
-		sort.Slice(entries, func(i, j int) bool {
-			return bytes.Compare(cbor.Encode(entries[i].Key), cbor.Encode(entries[j].Key)) < 0
-		})
-		buf.WriteByte('{')
-		for i, e := range entries {
-			if i > 0 {
-				buf.WriteByte(',')
-			}
-			key, ok := e.Key.AsText()
-			if !ok {
-				key = e.Key.String()
-			}
-			quoted, _ := json.Marshal(key)
-			buf.Write(quoted)
-			buf.WriteByte(':')
-			write(buf, e.Val)
-		}
-		buf.WriteByte('}')
+		writeMap(buf, v)
 	default:
 		quoted, _ := json.Marshal(v.String())
 		buf.Write(quoted)
 	}
+}
+
+func writeInt(buf *bytes.Buffer, v cbor.Value) {
+	if i, ok := v.AsInt64(); ok {
+		buf.WriteString(strconv.FormatInt(i, 10))
+		return
+	}
+	// A uint64 beyond int64, which a payload cannot hold (the decoder refuses
+	// one) but a value built in Go can: its digits.
+	buf.WriteString(v.String())
+}
+
+func writeFloat(buf *bytes.Buffer, v cbor.Value) {
+	f, _ := v.AsFloat()
+	text := strconv.FormatFloat(f, 'g', -1, 64)
+	if !strings.ContainsAny(text, ".eEn") {
+		text += ".0"
+	}
+	buf.WriteString(text)
+}
+
+func writeText(buf *bytes.Buffer, v cbor.Value) {
+	s, _ := v.AsText()
+	quoted, _ := json.Marshal(s)
+	buf.Write(quoted)
+}
+
+func writeBytes(buf *bytes.Buffer, v cbor.Value) {
+	b, _ := v.AsBytes()
+	buf.WriteString(`{"$bytes":"` + base64.StdEncoding.EncodeToString(b) + `"}`)
+}
+
+func writeList(buf *bytes.Buffer, v cbor.Value) {
+	items, _ := v.AsList()
+	buf.WriteByte('[')
+	for i, item := range items {
+		if i > 0 {
+			buf.WriteByte(',')
+		}
+		write(buf, item)
+	}
+	buf.WriteByte(']')
+}
+
+// writeMap sorts entries by canonical key bytes, so the same map always writes
+// the same JSON.
+func writeMap(buf *bytes.Buffer, v cbor.Value) {
+	entries, _ := v.AsMap()
+	entries = append([]cbor.MapEntry(nil), entries...)
+	sort.Slice(entries, func(i, j int) bool {
+		return bytes.Compare(cbor.Encode(entries[i].Key), cbor.Encode(entries[j].Key)) < 0
+	})
+	buf.WriteByte('{')
+	for i, e := range entries {
+		if i > 0 {
+			buf.WriteByte(',')
+		}
+		writeMapKey(buf, e.Key)
+		buf.WriteByte(':')
+		write(buf, e.Val)
+	}
+	buf.WriteByte('}')
+}
+
+func writeMapKey(buf *bytes.Buffer, key cbor.Value) {
+	text, ok := key.AsText()
+	if !ok {
+		text = key.String()
+	}
+	quoted, _ := json.Marshal(text)
+	buf.Write(quoted)
 }

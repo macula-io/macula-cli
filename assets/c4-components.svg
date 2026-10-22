@@ -1,0 +1,146 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 820" role="img" aria-label="macula-cli components">
+<title>macula-cli components</title>
+<style>
+.t-name { font-family: "Atkinson Hyperlegible", "Segoe UI", system-ui, -apple-system, Helvetica, Arial, sans-serif; font-size: 15px; font-weight: 700; }
+.t-desc { font-family: "Atkinson Hyperlegible", "Segoe UI", system-ui, -apple-system, Helvetica, Arial, sans-serif; font-size: 12.5px; }
+.t-rel { font-family: "Atkinson Hyperlegible", "Segoe UI", system-ui, -apple-system, Helvetica, Arial, sans-serif; font-size: 11.5px; paint-order: stroke; stroke-width: 4px; stroke-linejoin: round; }
+.t-code { font-family: "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace; font-size: 13px; font-weight: 600; }
+.t-type { font-family: "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace; font-size: 11.5px; }
+.t-bound { font-family: "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace; font-size: 12px; font-weight: 600; }
+.t-leg { font-family: "Atkinson Hyperlegible", "Segoe UI", system-ui, -apple-system, Helvetica, Arial, sans-serif; font-size: 12px; }
+.edge { fill: none; stroke-width: 1.25; }
+.edge-later { fill: none; stroke-width: 1.25; stroke-dasharray: 5 4; }
+.bg { fill: #FFFFFF; }
+.b-sys { fill: #F5E9CC; stroke: #A56F0A; stroke-width: 2; }
+.b-per { fill: #E3EBF2; stroke: #3B5B7A; stroke-width: 1.25; }
+.b-mac { fill: #E6E4EE; stroke: #5E5A78; stroke-width: 1.25; }
+.b-ext { fill: #ECEFED; stroke: #8A9791; stroke-width: 1.25; }
+.b-cmp { fill: #FFFFFF; stroke: #8A9791; stroke-width: 1.25; }
+.b-later { fill: none; stroke: #8A9791; stroke-width: 1.25; stroke-dasharray: 5 4; }
+.bound { fill: none; stroke: #B3BDB8; stroke-width: 1; }
+.head { fill: #3B5B7A; }
+.t-name, .t-code { fill: #16201D; }
+.t-type, .t-bound, .t-leg { fill: #66736E; }
+.t-desc { fill: #34413C; }
+.t-rel { fill: #66736E; stroke: #FFFFFF; }
+.edge, .edge-later { stroke: #8A9791; }
+.arrowhead { fill: #8A9791; }
+@media (prefers-color-scheme: dark) {
+.bg { fill: #171F1C; }
+.b-sys { fill: #3A2E13; stroke: #E3AA3C; }
+.b-per { fill: #1D2A36; stroke: #8EB4D8; }
+.b-mac { fill: #26243A; stroke: #A9A4C8; }
+.b-ext { fill: #1C2421; stroke: #7D8B85; }
+.b-cmp { fill: #171F1C; stroke: #7D8B85; }
+.b-later { stroke: #7D8B85; }
+.bound { stroke: #4A5752; }
+.head { fill: #8EB4D8; }
+.t-name, .t-code { fill: #E6ECE9; }
+.t-type, .t-bound, .t-leg { fill: #93A09A; }
+.t-desc { fill: #C3CDC8; }
+.t-rel { fill: #93A09A; stroke: #171F1C; }
+.edge, .edge-later { stroke: #7D8B85; }
+.arrowhead { fill: #7D8B85; }
+}
+</style>
+<defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="arrowhead" d="M0 0L10 5L0 10z"/></marker></defs>
+<rect class="bg" x="0" y="0" width="1000" height="820"/>
+<rect class="bound" x="16" y="40" width="968" height="706" rx="12"/>
+<text class="t-bound" x="32" y="62">macula-cli binary [Go 1.27, cmd/macula-cli, internal/]</text>
+<rect class="b-sys" x="32" y="70" width="936" height="80" rx="10"/>
+<text class="t-code" x="48" y="98">main.go</text>
+<text class="t-type" x="48" y="116">[command dispatch]</text>
+<text class="t-desc" x="48" y="140">One command per word; -h exits 0, a malformed invocation 2, a failure 1; version, commit and date set by goreleaser.</text>
+<rect class="bound" x="32" y="174" width="936" height="312" rx="12"/>
+<text class="t-bound" x="48" y="196">Commands [cmd/macula-cli, one file each]</text>
+<rect class="b-cmp" x="48" y="206" width="288" height="126" rx="10"/>
+<text class="t-code" x="64" y="234">connect, dht</text>
+<text class="t-type" x="64" y="252">[connect.go, dht.go]</text>
+<text class="t-desc" x="64" y="276">Resolve a seed and link to it,</text>
+<text class="t-desc" x="64" y="292">refusing a station that does not</text>
+<text class="t-desc" x="64" y="308">prove the pinned node_id; verified</text>
+<text class="t-desc" x="64" y="324">records by key or by type</text>
+<rect class="b-cmp" x="356" y="206" width="288" height="126" rx="10"/>
+<text class="t-code" x="372" y="234">call, serve</text>
+<text class="t-type" x="372" y="252">[call.go, serve.go]</text>
+<text class="t-desc" x="372" y="276">Direct dial, sealed when the provider</text>
+<text class="t-desc" x="372" y="292">advertises a KEM key; -ucan-file.</text>
+<text class="t-desc" x="372" y="308">Serve: echo or -reply, -confidential,</text>
+<text class="t-desc" x="372" y="324">-require-member (UCAN chain)</text>
+<rect class="b-cmp" x="664" y="206" width="288" height="126" rx="10"/>
+<text class="t-code" x="680" y="234">pubsub, stream, content</text>
+<text class="t-type" x="680" y="252">[pubsub.go, stream.go, content.go]</text>
+<text class="t-desc" x="680" y="276">Publish, watch verified events;</text>
+<text class="t-desc" x="680" y="292">a streaming round trip between two</text>
+<text class="t-desc" x="680" y="308">fresh nodes; share a file, fetch</text>
+<text class="t-desc" x="680" y="324">an MCID, probe both</text>
+<rect class="b-cmp" x="48" y="348" width="288" height="126" rx="10"/>
+<text class="t-code" x="64" y="376">identity</text>
+<text class="t-type" x="64" y="394">[identity.go]</text>
+<text class="t-desc" x="64" y="418">This node's node_id, key id and</text>
+<text class="t-desc" x="64" y="434">profile; prove-ownership: a payload</text>
+<text class="t-desc" x="64" y="450">with an ownership proof v2</text>
+<rect class="b-cmp" x="356" y="348" width="288" height="126" rx="10"/>
+<text class="t-code" x="372" y="376">realm</text>
+<text class="t-type" x="372" y="394">[realm.go]</text>
+<text class="t-desc" x="372" y="418">join and status: the join session</text>
+<text class="t-desc" x="372" y="434">over HTTPS, realm proof v2;</text>
+<text class="t-desc" x="372" y="450">membership: the UCAN over the mesh</text>
+<rect class="b-cmp" x="664" y="348" width="288" height="126" rx="10"/>
+<text class="t-code" x="680" y="376">person</text>
+<text class="t-type" x="680" y="394">[person.go]</text>
+<text class="t-desc" x="680" y="418">init: person.key, never connects;</text>
+<text class="t-desc" x="680" y="434">join once as yourself; bind and</text>
+<text class="t-desc" x="680" y="450">unbind a client node over the mesh</text>
+<rect class="b-cmp" x="32" y="510" width="300" height="96" rx="10"/>
+<text class="t-code" x="48" y="538">mesh.go</text>
+<text class="t-type" x="48" y="556">[meshFlags]</text>
+<text class="t-desc" x="48" y="580">-seed host:port@node_id, -realm,</text>
+<text class="t-desc" x="48" y="596">-realm-key, -identity, -ephemeral</text>
+<rect class="b-cmp" x="350" y="510" width="300" height="96" rx="10"/>
+<text class="t-code" x="366" y="538">internal/report</text>
+<text class="t-type" x="366" y="556">[package]</text>
+<text class="t-desc" x="366" y="580">One result: a -json envelope or</text>
+<text class="t-desc" x="366" y="596">text; failures by a fixed kind</text>
+<rect class="b-cmp" x="668" y="510" width="300" height="96" rx="10"/>
+<text class="t-code" x="684" y="538">internal/wirevalue</text>
+<text class="t-type" x="684" y="556">[package]</text>
+<text class="t-desc" x="684" y="580">Payloads JSON to wire CBOR and</text>
+<text class="t-desc" x="684" y="596">back; {"$bytes"}, no booleans</text>
+<rect class="b-cmp" x="32" y="630" width="300" height="96" rx="10"/>
+<text class="t-code" x="48" y="658">internal/identitystore</text>
+<text class="t-type" x="48" y="676">[package]</text>
+<text class="t-desc" x="48" y="700">Loads or creates identity.key,</text>
+<text class="t-desc" x="48" y="716">owner-readable, admission puzzle</text>
+<rect class="b-mac" x="350" y="630" width="618" height="96" rx="10"/>
+<text class="t-name" x="366" y="658">macula-go v0.27.0</text>
+<text class="t-type" x="366" y="676">[Macula SDK, wire 1.0]</text>
+<text class="t-desc" x="366" y="700">pool, stationlink, handshake, identity, profile, cbor, record, ucan,</text>
+<text class="t-desc" x="366" y="716">devicerequest (realm proof v2), ownershipproof, manifest</text>
+<path class="edge" d="M500 150V174" marker-end="url(#a)"/>
+<text class="t-rel" x="508" y="166">dispatches</text>
+<path class="edge" d="M182 486V510" marker-end="url(#a)"/>
+<text class="t-rel" x="190" y="502">joins the mesh</text>
+<path class="edge" d="M500 486V510" marker-end="url(#a)"/>
+<text class="t-rel" x="508" y="502">every result</text>
+<path class="edge" d="M816 486V510" marker-end="url(#a)"/>
+<text class="t-rel" x="824" y="502">payloads</text>
+<path class="edge" d="M182 606V630" marker-end="url(#a)"/>
+<text class="t-rel" x="190" y="622">the key</text>
+<path class="edge" d="M332 560H341V678H350" marker-end="url(#a)"/>
+<text class="t-rel" x="349" y="622">pool.Pool, pinned seeds</text>
+<rect class="b-sys" x="24" y="780" width="22" height="14" rx="3"/>
+<text class="t-leg" x="54" y="792">In scope</text>
+<rect class="b-per" x="110.8" y="780" width="22" height="14" rx="3"/>
+<text class="t-leg" x="140.8" y="792">Person</text>
+<rect class="b-mac" x="184.39999999999998" y="780" width="22" height="14" rx="3"/>
+<text class="t-leg" x="214.39999999999998" y="792">Macula infrastructure</text>
+<rect class="b-ext" x="357.0" y="780" width="22" height="14" rx="3"/>
+<text class="t-leg" x="387.0" y="792">External system</text>
+<rect class="b-cmp" x="490.0" y="780" width="22" height="14" rx="3"/>
+<text class="t-leg" x="520.0" y="792">Container or component</text>
+<rect class="b-later" x="669.2" y="780" width="22" height="14" rx="3"/>
+<text class="t-leg" x="699.2" y="792">Planned, not built</text>
+<rect class="bound" x="822.0" y="780" width="22" height="14" rx="3"/>
+<text class="t-leg" x="852.0" y="792">Boundary</text>
+</svg>

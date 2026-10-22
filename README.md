@@ -191,6 +191,12 @@ Releases: a `v*` tag builds Linux, macOS and Windows binaries for amd64 and
 arm64 with goreleaser and attaches them, with `checksums.txt`, to the GitHub
 release.
 
+## Architecture
+
+What macula-cli talks to and what it is made of, as a C4 model: [architecture/README.md](architecture/README.md).
+
+![macula-cli system context](assets/c4-context.svg)
+
 ## Relationship to other repos
 
 - [macula-go](https://github.com/macula-io/macula-go): the wire 1.0 node this

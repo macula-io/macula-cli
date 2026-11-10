@@ -4,7 +4,7 @@
 
 **Status: macula-cli 0.16.0** (the latest `v*` tag; the version is set from the tag by `.goreleaser.yml`), on wire 1.0 through macula-go v0.27.0 (`go.mod`). One Go binary, released for Linux, macOS and Windows on amd64 and arm64.
 
-Legend, the same in both diagrams and as in [mcl-fovea](https://github.com/macula-services/mcl-fovea/tree/main/architecture): amber is the element in scope, blue a person, lavender-grey **Macula infrastructure** (the stations and their DHT, macula-realm, the macula SDK), grey-green an external system, white a container or component, a thin solid rounded outline with a muted label a boundary, and dashed boxes are planned, not built (none here).
+Legend, the same in both diagrams: amber is the element in scope, blue a person, lavender-grey **Macula infrastructure** (the stations and their DHT, macula-realm, the macula SDK), grey-green an external system, white a container or component, a thin solid rounded outline with a muted label a boundary, and dashed boxes are planned, not built (none here).
 
 ## Level 1: system context
 
@@ -33,11 +33,11 @@ Legend, the same in both diagrams and as in [mcl-fovea](https://github.com/macul
 | `identity` | `identity.go` | The node key's node_id, key id and profile; `prove-ownership` (ownership proof v2) |
 | `realm` | `realm.go` | `join` and `status` over HTTPS with realm proof v2; `membership` over the mesh |
 | `person` | `person.go` | `init` (person key, never connects), `join`, `bind`, `unbind` |
-| `mesh.go` | `meshFlags` | The flags every mesh command takes (`-seed`, `-realm`, `-realm-key`, `-identity`, `-ephemeral`); links the node to the seeds |
+| `mesh.go` | `meshFlags` | The flags every mesh command takes (`-seed`, `-realm`, `-realm-key`, `-identity`, `-profile`, `-ephemeral`, `-timeout`, `-json`); links the node to the seeds |
 | `internal/identitystore` | Package | Loads or creates `identity.key` (owner-readable, admission puzzle solved) |
 | `internal/report` | Package | Every result as a `-json` envelope or text; failure kinds from macula-go's typed errors |
 | `internal/wirevalue` | Package | Payloads between JSON and the wire's CBOR (`{"$bytes": ...}`, no booleans) |
-| macula-go v0.27.0 | Macula SDK | `pool`, `stationlink`, `handshake`, `identity`, `profile`, `cbor`, `record`, `ucan`, `devicerequest`, `ownershipproof`, `manifest` |
+| macula-go v0.27.0 | Macula SDK | `pool`, `stationlink`, `handshake`, `identity`, `profile`, `cbor`, `record`, `ucan`, `devicerequest`, `ownershipproof`, `manifest`, `frame` |
 
 ## Editing the diagrams
 

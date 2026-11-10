@@ -54,21 +54,54 @@ irm https://raw.githubusercontent.com/macula-io/macula-cli/master/install.ps1 | 
 Both download the release archive for your OS and architecture from
 [GitHub Releases](https://github.com/macula-io/macula-cli/releases), check it
 against the release's `checksums.txt`, and install `macula-cli`
-(`$HOME/.local/bin` on Linux and macOS, `%LOCALAPPDATA%\macula-cli` on Windows;
-`MACULA_CLI_INSTALL_DIR` overrides). With Go 1.27:
+(`$HOME/.local/bin` on Linux and macOS, `%LOCALAPPDATA%\macula-cli` on Windows).
+`MACULA_CLI_INSTALL_DIR` moves the directory and `MACULA_CLI_VERSION` (a tag,
+such as `v0.16.0`) installs that release instead of the latest. With Go 1.27:
 `go install github.com/macula-io/macula-cli/cmd/macula-cli@latest`.
 
 The public stations have IPv6 addresses only: macula-cli needs a working IPv6
 route and outbound UDP to port 4433.
 
-`uninstall.sh` / `uninstall.ps1` (same path) remove the binary and leave the
-node key in place; `--purge` / `-Purge` removes it too.
+To uninstall, remove the binary and leave the config directory alone:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/macula-io/macula-cli/master/uninstall.sh | bash
+```
+
+`--purge` / `-Purge` removes the config directory too. The flag reaches the
+script either as its first argument (`bash -s --`) or through a downloaded
+copy:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/macula-io/macula-cli/master/uninstall.sh | bash -s -- --purge
+```
+
+```powershell
+iwr -useb https://raw.githubusercontent.com/macula-io/macula-cli/master/uninstall.ps1 -OutFile uninstall.ps1
+.\uninstall.ps1 -Purge
+```
+
+That directory holds more than the node key: `identity.key`, the person key
+`person.key` — which signs `person bind` and `person unbind` for every client
+you bound — and the memberships `person join` kept under
+`person/<person id>/<realm>.ucan`. A purged person key cannot be recovered: a
+realm admits the person once more, and every client is bound to it again.
 
 ## Quick start
 
 Every station is pinned: `-seed host[:port]@<station node_id hex>`. A realm is
 `-realm` (its name, `io.macula`, or its 64-hex id, which is the name's sha256),
 trusted with `-realm-key` (the realm key as carried, in hex, or `@file`).
+
+io.macula publishes its realm key, with the realm's name and id and the key's
+id, at `https://realm.macula.io/.well-known/macula-realm.json`. `-realm-key`
+takes hex, so convert the `public_key` field once:
+
+```bash
+curl -fsSL https://realm.macula.io/.well-known/macula-realm.json \
+  | python3 -c 'import base64,json,sys; print(base64.b64decode(json.load(sys.stdin)["public_key"]).hex())' \
+  > io.macula.key
+```
 
 ```bash
 SEED='station-fi-helsinki.macula.io:4433@004d1f470097ccf8826ce291900e882fdb1f20375e53901facaec0f23eb4efd8'
@@ -107,6 +140,7 @@ a few seconds). `-ephemeral` uses a key made for the run and never saved;
 | `person join` | Join a realm once, as yourself: confirm at the join URL signed in as you; keeps the membership the realm issues to your person key, asking it to last `-membership-ttl` (default 720h, the realm's 30-day cap) |
 | `person bind -to <node_id>` | The realm admits that node as your client, on its own membership sponsored by you: it renews its own token at your tier and ends with your membership |
 | `person unbind -to <node_id>` | The realm ends that client's membership; you can bind it again later |
+| `version` | This binary's version, commit and build time (`-v` and `--version` too) |
 
 ### One person, many clients
 
@@ -118,8 +152,8 @@ email, and bind each of your clients once instead of joining every device:
 macula-cli person init                                  # once: prints your person id
 macula-cli person join -realm io.macula                 # once: confirm at the join URL, signed in by email
 macula-cli identity                                     # this client's node_id
-macula-cli person bind -seed ... -realm io.macula -realm-key @io_macula.key -to <client node_id>
-macula-cli realm membership -seed ... -realm io.macula -realm-key @io_macula.key   # on the client: its own token
+macula-cli person bind -seed ... -realm io.macula -realm-key @io.macula.key -to <client node_id>
+macula-cli realm membership -seed ... -realm io.macula -realm-key @io.macula.key   # on the client: its own token
 ```
 
 The client asks for its own membership token (`realm membership`; macula-mcp
@@ -167,11 +201,15 @@ With `-json` every command prints one envelope (`pubsub watch` one per event):
 ```
 
 `kind` is one of `provider_error`, `relay_error`, `stream_error`,
-`identity_mismatch`, `realm_refusal`, `timeout`, `no_provider`, `no_realm_key`, `not_found`,
-`not_shared`, `content_unavailable`, `invalid_argument` and `failed`, taken
-from macula-go's typed errors and the realm's own error codes, never from a
-message. A malformed invocation (a `-json` one included) prints an
-`invalid_argument` envelope and exits 2, a failure exits 1, `-h` exits 0.
+`identity_mismatch`, `refused` (the station refused the registration, with its
+reason in `code`), `unacknowledged` (the station did not answer the
+registration), `realm_refusal`, `timeout`, `no_link` (no station link is up),
+`no_provider`, `no_station_endpoint` (no usable endpoint record for the
+station, with the reason in `code`), `no_realm_key`, `not_found`, `not_shared`,
+`content_unavailable`, `invalid_argument` and `failed`, taken from macula-go's
+typed errors and the realm's own error codes, never from a message. A malformed
+invocation (a `-json` one included) prints an `invalid_argument` envelope and
+exits 2, a failure exits 1, `-h` exits 0.
 
 ## Build and test
 
@@ -185,7 +223,12 @@ stations speaking wire 1.0, sharing a DHT, and a test realm with one org), and
 `realm join` against an HTTP realm that verifies the proof as macula-realm
 does. No test touches the network. `scripts/live_check.sh` runs one check
 against a fleet station with keys made for the run: connect, node records,
-`mcl-echo/echo`, and a watch hearing one publication.
+`mcl-echo/echo`, and a watch hearing one publication. It takes io.macula's
+realm key in hex from `MACULA_CLI_LIVE_REALM_KEY` — the Quick start's
+`io.macula.key`, or its contents as the value — or, where that is unset, from
+the Erlang header of a local service checkout named by `MCL_ECHO_REALM_HRL`,
+which a public clone does not have. Its station and realm come from
+`MACULA_CLI_LIVE_SEED` and `MACULA_CLI_LIVE_REALM`.
 
 Releases: a `v*` tag builds Linux, macOS and Windows binaries for amd64 and
 arm64 with goreleaser and attaches them, with `checksums.txt`, to the GitHub
@@ -201,10 +244,11 @@ What macula-cli talks to and what it is made of, as a C4 model: [architecture/RE
 
 - [macula-go](https://github.com/macula-io/macula-go): the wire 1.0 node this
   CLI drives, and its teststation.
-- [macula-station](https://github.com/macula-io/macula-station): the stations
-  it links to.
-- [macula-realm](https://github.com/macula-io/macula-realm): the realm that
-  admits devices and issues membership.
+- macula-station: the stations it links to. The repository is private; a
+  station is reached by `-seed host:port@<node_id>`, as above.
+- macula-realm: the realm that admits devices and issues membership, serving
+  `realm.macula.io`. The repository is private; the realm's public key and ids
+  are what `.well-known/macula-realm.json` publishes.
 
 ## License
 

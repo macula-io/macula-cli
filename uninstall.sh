@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
 # Uninstalls macula-cli: removes the binary install.sh placed. Leaves the
-# persisted identity alone by default -- it took real puzzle-grinding work
-# to generate and reinstalling later should be able to reuse it; pass
-# --purge to remove it too.
+# config directory alone by default -- it took real puzzle-grinding work to
+# generate the node key, and reinstalling later should be able to reuse it.
+#
+# --purge removes the whole config directory: the node key (identity.key),
+# the person key (person.key), and the memberships kept under person/. Losing
+# the person key means joining a realm again as a person and binding every
+# client again.
 #
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/macula-io/macula-cli/master/uninstall.sh | bash
@@ -46,12 +50,12 @@ fi
 if [ "$purge" -eq 1 ]; then
   if [ -e "$CONFIG_DIR" ]; then
     rm -rf "$CONFIG_DIR"
-    log "removed ${CONFIG_DIR} (--purge: persisted identity deleted too)"
+    log "removed ${CONFIG_DIR} (--purge: the node key, the person key and the memberships with it)"
   else
     log "no config directory found at ${CONFIG_DIR}"
   fi
 else
   if [ -e "$CONFIG_DIR" ]; then
-    log "left ${CONFIG_DIR} in place (persisted identity) — pass --purge to remove it too"
+    log "left ${CONFIG_DIR} in place (node key, person key and memberships) — pass --purge to remove it all"
   fi
 fi

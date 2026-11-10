@@ -46,8 +46,7 @@ if [ -z "$version" ]; then
   # Capture the full response before grep/sed touch it -- piping curl
   # straight into `grep -m1` closes the pipe on the first match, curl
   # gets SIGPIPE on its next write, and `pipefail` aborts the script
-  # even though the match was already found. See
-  # feedback_pipeline_head_sigpipe_in_scripts for the same class of bug.
+  # even though the match was already found.
   latest_release="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest")"
   version="$(grep -m1 '"tag_name"' <<<"$latest_release" | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/')"
   [ -n "$version" ] || die "could not resolve the latest release tag from the GitHub API"

@@ -64,7 +64,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 One person joins a realm once, and each of their clients can call
 realm-gated procedures with a short note from them
-([macula-architecture#15](https://github.com/macula-io/macula-architecture/issues/15)).
+(macula-architecture#15, a private repository).
 
 ### Added
 

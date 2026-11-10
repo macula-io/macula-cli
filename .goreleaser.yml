@@ -39,10 +39,9 @@ checksum:
   name_template: "checksums.txt"
 
 changelog:
-  # No commit-message convention is enforced in this repo yet (see
-  # CHANGELOG.md's own absence org-wide, per workspace memory) --
-  # GoReleaser's default log-of-commits is more honest than a curated
-  # changelog this repo doesn't actually maintain.
+  # The release notes are goreleaser's commit log. They sit beside
+  # CHANGELOG.md, which is kept by hand in Keep a Changelog form and is the
+  # history a reader is pointed at; this is the per-commit detail.
   sort: asc
 
 release:

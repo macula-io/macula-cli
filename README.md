@@ -69,16 +69,16 @@ curl -fsSL https://raw.githubusercontent.com/macula-io/macula-cli/master/uninsta
 ```
 
 `--purge` / `-Purge` removes the config directory too. The flag reaches the
-script either as its first argument (`bash -s --`) or through a downloaded
-copy:
+script either as its first argument (`bash -s --`) or, on Windows, as an
+argument to a script block — a script file would be refused by the default
+`Restricted` execution policy, and a script block is never read from disk:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/macula-io/macula-cli/master/uninstall.sh | bash -s -- --purge
 ```
 
 ```powershell
-iwr -useb https://raw.githubusercontent.com/macula-io/macula-cli/master/uninstall.ps1 -OutFile uninstall.ps1
-.\uninstall.ps1 -Purge
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/macula-io/macula-cli/master/uninstall.ps1))) -Purge
 ```
 
 That directory holds more than the node key: `identity.key`, the person key

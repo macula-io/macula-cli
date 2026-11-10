@@ -279,9 +279,10 @@ it authenticated.
 - `error.kind` is one of `provider_error` (with the provider's `code` and
   `detail`), `relay_error` (`code`), `stream_error` (`code`, `detail`,
   `relay`), `identity_mismatch` (a station that does not prove the pinned
-  node_id), `refused` (the station refused the registration — `serve` and
-  `pubsub watch` — with its reason in `code`), `unacknowledged` (the station
-  never answered the registration), `realm_refusal` (the realm's error as
+  node_id), `refused` (the station refused the registration, with its reason
+  in `code`: `serve`, `stream probe`, `content share` and `content probe`
+  advertise a procedure, `pubsub watch` subscribes), `unacknowledged` (the
+  station never answered the registration), `realm_refusal` (the realm's error as
   `code`, such as `bad_proof`, `session_not_found` or `session_expired`, and
   the HTTP status as `detail`), `timeout`, `no_link` (no station link is up),
   `no_provider`, `no_station_endpoint` (no usable endpoint record for the

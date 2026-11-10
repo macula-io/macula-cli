@@ -12,9 +12,10 @@
 #
 # Usage:
 #   irm https://raw.githubusercontent.com/macula-io/macula-cli/master/uninstall.ps1 | iex
-#   # or, to pass -Purge, download first:
-#   iwr -useb https://raw.githubusercontent.com/macula-io/macula-cli/master/uninstall.ps1 -OutFile uninstall.ps1
-#   .\uninstall.ps1 -Purge
+#   # or, to pass -Purge, run it as a script block -- a downloaded script file
+#   # is refused by the default Restricted execution policy, a script block is
+#   # never read from disk:
+#   & ([scriptblock]::Create((irm https://raw.githubusercontent.com/macula-io/macula-cli/master/uninstall.ps1))) -Purge
 #
 # Env overrides:
 #   $env:MACULA_CLI_INSTALL_DIR  where to look for the binary (default: $env:LOCALAPPDATA\macula-cli)
